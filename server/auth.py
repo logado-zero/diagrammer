@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from bson import ObjectId
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from server.db import sessions, users
+from server.shared import now
 
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
@@ -70,7 +71,7 @@ async def current_user(request: Request) -> dict[str, Any]:
     # expiresAt is also enforced by a TTL index (db.py), but that reaper only
     # runs about once a minute, so check it here too rather than honoring a
     # session that is expired but not yet swept.
-    if not session or session["expiresAt"] <= datetime.now(timezone.utc).replace(tzinfo=None):
+    if not session or session["expiresAt"] <= now():
         raise HTTPException(status_code=401, detail="Session expired.")
     user = await users.find_one({"_id": session["ownerId"]})
     if not user:
@@ -81,7 +82,7 @@ async def current_user(request: Request) -> dict[str, Any]:
 async def _start_session(response: Response, owner_id: ObjectId) -> None:
     """Creates a session row and sets its cookie on the response."""
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=SESSION_DAYS)
+    expires_at = now() + timedelta(days=SESSION_DAYS)
     await sessions.insert_one({"token": token, "ownerId": owner_id, "expiresAt": expires_at})
     response.set_cookie(
         SESSION_COOKIE,
@@ -132,7 +133,7 @@ async def register(body: Credentials, response: Response):
             {
                 "userId": user_id,
                 "passwordHash": hash_password(body.password),
-                "createdAt": datetime.now(timezone.utc).replace(tzinfo=None),
+                "createdAt": now(),
             }
         )
     except DuplicateKeyError:
@@ -173,7 +174,7 @@ async def guest(response: Response):
             "userId": user_id,
             "passwordHash": "",
             "guest": True,
-            "createdAt": datetime.now(timezone.utc).replace(tzinfo=None),
+            "createdAt": now(),
         }
     )
     await _start_session(response, result.inserted_id)

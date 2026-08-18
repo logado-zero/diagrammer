@@ -33,11 +33,9 @@ import asyncio  # noqa: E402
 import base64  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
 from typing import Any  # noqa: E402
 
 from bson import ObjectId  # noqa: E402
-from bson.errors import InvalidId  # noqa: E402
 from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, Response, StreamingResponse  # noqa: E402
@@ -51,6 +49,7 @@ from server.auth import current_user  # noqa: E402
 from server.db import agent_logs, attachments, conversations, ensure_indexes  # noqa: E402
 from server.memory import store as blob_store  # noqa: E402
 from server.models import DEFAULT_MODEL_ID, MODEL_CATALOG, find_model_option, is_model_available  # noqa: E402
+from server.shared import now, object_id, owned_conversation, owner_filter  # noqa: E402
 from server.subagents import run_title_subagent  # noqa: E402
 from server.types import ChatRequestBody  # noqa: E402
 
@@ -146,31 +145,6 @@ def models():
     }
 
 
-def _now() -> datetime:
-    """Naive-UTC timestamp — what BSON stores and what auth.py's session checks compare against."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _object_id(raw: str) -> ObjectId:
-    """Input: an id string from the client. Output: an ObjectId, or a 404 — a malformed id is a miss, not a 500."""
-    try:
-        return ObjectId(raw)
-    except (InvalidId, TypeError):
-        raise HTTPException(status_code=404, detail="Conversation not found.") from None
-
-
-async def _owned_conversation(conversation_id: str, owner_id: ObjectId) -> dict[str, Any]:
-    """
-    Loads one conversation, scoped to its owner. Every conversation route
-    goes through this rather than looking up by id alone, so someone else's
-    id is a 404 instead of a read of their data.
-    """
-    doc = await conversations.find_one({"_id": _object_id(conversation_id), "ownerId": owner_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    return doc
-
-
 def _public_conversation(doc: dict[str, Any]) -> dict[str, Any]:
     """Input: a conversation document. Output: the JSON the client consumes (ObjectIds stringified)."""
     return {
@@ -204,7 +178,7 @@ def _public_conversation(doc: dict[str, Any]) -> dict[str, Any]:
 async def list_conversations(user: dict[str, Any] = Depends(current_user)):
     """Input: the session cookie. Output: this user's conversations, newest first, without their message bodies (the sidebar only needs titles)."""
     cursor = (
-        conversations.find({"ownerId": user["_id"]}, {"title": 1, "updatedAt": 1})
+        conversations.find(owner_filter(user["_id"]), {"title": 1, "updatedAt": 1})
         .sort("updatedAt", -1)
         .limit(200)
     )
@@ -217,14 +191,14 @@ async def list_conversations(user: dict[str, Any] = Depends(current_user)):
 @app.get("/api/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str, user: dict[str, Any] = Depends(current_user)):
     """Input: a conversation id + the session cookie. Output: the full conversation including every stored diagram/chart payload, ready to re-render with no LLM call."""
-    return _public_conversation(await _owned_conversation(conversation_id, user["_id"]))
+    return _public_conversation(await owned_conversation(conversation_id, user["_id"]))
 
 
 @app.get("/api/conversations/{conversation_id}/logs")
 async def get_conversation_logs(conversation_id: str, user: dict[str, Any] = Depends(current_user)):
     """Input: a conversation id + the session cookie. Output: that conversation's agent_logs turns (see server/db.py), newest first — what the agent actually did on each turn, durable past the ephemeral ProcessTrace UI."""
-    doc = await _owned_conversation(conversation_id, user["_id"])
-    cursor = agent_logs.find({"ownerId": user["_id"], "conversationId": doc["_id"]}).sort("startedAt", -1)
+    doc = await owned_conversation(conversation_id, user["_id"])
+    cursor = agent_logs.find(owner_filter(user["_id"], conversationId=doc["_id"])).sort("startedAt", -1)
     return [
         {
             "id": str(log["_id"]),
@@ -240,9 +214,9 @@ async def get_conversation_logs(conversation_id: str, user: dict[str, Any] = Dep
 @app.get("/api/attachments/{blob_id}")
 async def get_attachment(blob_id: str, user: dict[str, Any] = Depends(current_user)):
     """Input: a GridFS blob id + the session cookie. Output: the raw attachment bytes with their original media type, or 404 if missing or not this user's. This is what a loaded conversation's `attachment.url` (see _public_conversation) points at."""
-    object_id = _object_id(blob_id)
+    blob_oid = object_id(blob_id)
     try:
-        stream = await attachments.open_download_stream(object_id)
+        stream = await attachments.open_download_stream(blob_oid)
     except NoFile:
         raise HTTPException(status_code=404, detail="Attachment not found.") from None
     if stream.metadata is None or stream.metadata.get("ownerId") != user["_id"]:
@@ -262,8 +236,8 @@ async def delete_conversation(conversation_id: str, user: dict[str, Any] = Depen
     leaving a searchable copy behind would be both a correctness and a
     privacy bug.
     """
-    object_id = _object_id(conversation_id)
-    doc = await conversations.find_one_and_delete({"_id": object_id, "ownerId": user["_id"]})
+    conversation_oid = object_id(conversation_id)
+    doc = await conversations.find_one_and_delete(owner_filter(user["_id"], _id=conversation_oid))
     if doc is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     for m in doc.get("messages", []):
@@ -273,8 +247,8 @@ async def delete_conversation(conversation_id: str, user: dict[str, Any] = Depen
                 await attachments.delete(attachment["blobId"])
             except NoFile:
                 pass
-    await memory.forget_conversation(user["_id"], object_id)
-    await agent_logs.delete_many({"ownerId": user["_id"], "conversationId": object_id})
+    await memory.forget_conversation(user["_id"], conversation_oid)
+    await agent_logs.delete_many(owner_filter(user["_id"], conversationId=conversation_oid))
     return {"ok": True}
 
 
@@ -288,7 +262,7 @@ async def _stored_user_message(body: ChatRequestBody, owner_id: ObjectId) -> dic
     sitting in every message.
     """
     last = body.messages[-1]
-    message: dict[str, Any] = {"role": last.role, "text": last.text, "at": _now()}
+    message: dict[str, Any] = {"role": last.role, "text": last.text, "at": now()}
 
     if last.image is not None:
         blob_id = await blob_store.save_blob(
@@ -326,23 +300,23 @@ async def _begin_turn(body: ChatRequestBody, owner_id: ObjectId) -> tuple[Object
     keep = len(body.messages) - 1
 
     if body.conversation_id:
-        doc = await _owned_conversation(body.conversation_id, owner_id)
+        doc = await owned_conversation(body.conversation_id, owner_id)
         kept = doc.get("messages", [])[:keep]
         await conversations.update_one(
-            {"_id": doc["_id"]}, {"$set": {"messages": [*kept, user_message], "updatedAt": _now()}}
+            {"_id": doc["_id"]}, {"$set": {"messages": [*kept, user_message], "updatedAt": now()}}
         )
         return doc["_id"], None
 
     text = body.messages[-1].text.strip()
     title = text[:TITLE_PLACEHOLDER_CHARS] or "New diagram"
-    now = _now()
+    created_at = now()
     result = await conversations.insert_one(
         {
             "ownerId": owner_id,
             "title": title,
             "titleLocked": False,
-            "createdAt": now,
-            "updatedAt": now,
+            "createdAt": created_at,
+            "updatedAt": created_at,
             "messages": [user_message],
         }
     )
@@ -462,7 +436,7 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
         # agent_logs comment) — written once the turn ends, not embedded on
         # the message, so it survives independent of conversation history.
         steps: list[dict[str, Any]] = []
-        started_at = _now()
+        started_at = now()
         try:
             conversation_id, created = await _begin_turn(body, user["_id"])
             if created:
@@ -477,7 +451,7 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
                     reply["charts"].append(event["payload"])
                 elif event["type"] == "trace":
                     reply["trace"].append(event["label"])
-                    steps.append({"type": "trace", "label": event["label"], "at": _now()})
+                    steps.append({"type": "trace", "label": event["label"], "at": now()})
                 elif event["type"] == "retrieval":
                     # The one provider event that is never relayed. It's a
                     # diagnostic record of what a memory search returned (see
@@ -485,13 +459,13 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
                     # document only, not for the chat UI's Process Trace. The
                     # `continue` past the yield below is what enforces that, and
                     # it also keeps json.dumps away from the datetimes inside.
-                    steps.append({**event, "at": _now()})
+                    steps.append({**event, "at": now()})
                     continue
                 elif event["type"] == "done":
-                    reply["at"] = _now()
+                    reply["at"] = now()
                     await conversations.update_one(
                         {"_id": conversation_id},
-                        {"$push": {"messages": reply}, "$set": {"updatedAt": _now()}},
+                        {"$push": {"messages": reply}, "$set": {"updatedAt": now()}},
                     )
                     titled = await _maybe_generate_title(conversation_id)
                     if titled:
@@ -502,17 +476,17 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
                     # tool (see DISCUSS_RAG.md).
                     _spawn_memory_ingest(body, conversation_id, user["_id"], reply)
                 elif event["type"] == "error":
-                    steps.append({"type": "error", "label": event["message"], "at": _now()})
+                    steps.append({"type": "error", "label": event["message"], "at": now()})
 
                 if event["type"] in ("done", "error"):
                     if event["type"] == "done":
-                        steps.append({"type": "done", "label": "Reply ready", "at": _now()})
+                        steps.append({"type": "done", "label": "Reply ready", "at": now()})
                     await agent_logs.insert_one(
                         {
                             "ownerId": user["_id"],
                             "conversationId": conversation_id,
                             "startedAt": started_at,
-                            "endedAt": _now(),
+                            "endedAt": now(),
                             "status": event["type"],
                             "steps": steps,
                         }
