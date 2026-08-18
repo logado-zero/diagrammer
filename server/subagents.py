@@ -18,6 +18,7 @@ import os
 import re
 from typing import Any
 
+from server import mermaid
 from server.providers import api as api_provider
 from server.providers import openai_provider
 
@@ -178,23 +179,53 @@ bar chart. Never sacrifice legibility for variety: don't force an exotic chart t
 doesn't actually fit it."""
 
 
+def _subagent_provider(preferred: str | None) -> str | None:
+    """
+    Input: the provider that answered this turn ("claude"/"openai"), or None
+    when the caller has no opinion. Output: which provider runs the styling
+    pass, or None if neither has a key.
+
+    Prefers the turn's own provider so a diagram drawn by an OpenAI model is
+    polished by one too. It used to check ANTHROPIC_API_KEY first regardless,
+    which meant the picker chose one vendor for the answer and the environment
+    silently chose another for the styling.
+
+    Falls back when the preferred one has no key to bill — notably Claude in
+    agent-sdk mode, which authenticates through the local CLI and has no API
+    key at all, so its subagent pass has to run on OpenAI or not at all.
+    """
+    if preferred == "claude" and os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    if preferred == "openai" and os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return None
+
+
 async def _call_subagent(
     system_prompt: str,
-    tool_name: str,
-    tool_description: str,
-    tool_input_schema: dict[str, Any],
+    tool: dict[str, Any],
     user_json: str,
+    provider: str | None = None,
 ) -> dict[str, Any] | None:
     """
-    Runs one forced-tool-call LLM turn against whichever provider has a key
-    configured, mirroring the forced-structured-output pattern the primary
-    providers already use for their own tool loop.
-    Input: a system prompt + tool definition + the intent as a JSON string.
+    Runs one forced-tool-call LLM turn, mirroring the forced-structured-output
+    pattern the primary providers already use for their own tool loop.
+    Input: a system prompt, one of this file's *_TOOL dicts, the intent as a
+    JSON string, and the provider that answered the turn.
     Output: the tool call's input dict, or None if no subagent client is
     available or the call failed (callers fall back to a deterministic
     default rather than erroring the whole turn over a styling pass).
     """
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    tool_name = tool["name"]
+    tool_description = tool["description"]
+    tool_input_schema = tool["input_schema"]
+    chosen = _subagent_provider(provider)
+
+    if chosen == "claude":
         try:
             message = await api_provider._client.messages.create(
                 model=ANTHROPIC_SUBAGENT_MODEL,
@@ -211,7 +242,7 @@ async def _call_subagent(
                 return block.input
         return None
 
-    if os.environ.get("OPENAI_API_KEY"):
+    if chosen == "openai":
         client = await openai_provider._get_client()
         try:
             response = await client.chat.completions.create(
@@ -241,7 +272,9 @@ async def _call_subagent(
     return None
 
 
-async def run_flowchart_subagent(intent: dict[str, Any], user_text: str = "") -> dict[str, Any]:
+async def run_flowchart_subagent(
+    intent: dict[str, Any], user_text: str = "", provider: str | None = None
+) -> dict[str, Any]:
     """
     Turns a render_diagram tool-call payload (title/direction/nodes/edges)
     into {title, mermaid}, a Mermaid flowchart. user_text (the latest user
@@ -251,20 +284,14 @@ async def run_flowchart_subagent(intent: dict[str, Any], user_text: str = "") ->
     subagent client is configured or the call fails.
     """
     user_json = json.dumps({"intent": intent, "userMessage": user_text})
-    result = await _call_subagent(
-        FLOWCHART_SUBAGENT_PROMPT,
-        EMIT_MERMAID_FLOWCHART_TOOL["name"],
-        EMIT_MERMAID_FLOWCHART_TOOL["description"],
-        EMIT_MERMAID_FLOWCHART_TOOL["input_schema"],
-        user_json,
-    )
+    result = await _call_subagent(FLOWCHART_SUBAGENT_PROMPT, EMIT_MERMAID_FLOWCHART_TOOL, user_json, provider)
     payload = result if result is not None else _fallback_mermaid_flowchart(intent)
     if isinstance(payload.get("mermaid"), str):
-        payload = {**payload, "mermaid": _rename_reserved_end(payload["mermaid"])}
+        payload = {**payload, "mermaid": mermaid.rename_reserved_end(payload["mermaid"])}
     return payload
 
 
-async def run_chart_subagent(intent: dict[str, Any]) -> dict[str, Any]:
+async def run_chart_subagent(intent: dict[str, Any], provider: str | None = None) -> dict[str, Any]:
     """
     Turns a render_chart tool-call payload (title/chartType/xKey/series/data)
     into {title, option}, an Apache ECharts option object. Falls back to a
@@ -272,20 +299,14 @@ async def run_chart_subagent(intent: dict[str, Any]) -> dict[str, Any]:
     client is configured or the call fails, so the app still works with
     zero LLM calls set up for this pass.
     """
-    result = await _call_subagent(
-        CHART_SUBAGENT_PROMPT,
-        EMIT_CHART_OPTION_TOOL["name"],
-        EMIT_CHART_OPTION_TOOL["description"],
-        EMIT_CHART_OPTION_TOOL["input_schema"],
-        json.dumps(intent),
-    )
+    result = await _call_subagent(CHART_SUBAGENT_PROMPT, EMIT_CHART_OPTION_TOOL, json.dumps(intent), provider)
     return result if result is not None else _fallback_chart_option(intent)
 
 
 MAX_TITLE_CHARS = 60
 
 
-async def run_title_subagent(messages: list[dict[str, Any]]) -> str | None:
+async def run_title_subagent(messages: list[dict[str, Any]], provider: str | None = None) -> str | None:
     """
     Names a saved conversation from its opening turns, for the history
     sidebar (see main.py, which decides *when* to call this).
@@ -304,11 +325,7 @@ async def run_title_subagent(messages: list[dict[str, Any]]) -> str | None:
         for m in messages
     ]
     result = await _call_subagent(
-        TITLE_SUBAGENT_PROMPT,
-        EMIT_TITLE_TOOL["name"],
-        EMIT_TITLE_TOOL["description"],
-        EMIT_TITLE_TOOL["input_schema"],
-        json.dumps(digest, ensure_ascii=False),
+        TITLE_SUBAGENT_PROMPT, EMIT_TITLE_TOOL, json.dumps(digest, ensure_ascii=False), provider
     )
     title = (result or {}).get("title")
     if not isinstance(title, str):
@@ -362,44 +379,6 @@ _MERMAID_SHAPE = {
     "io": ('[/"', '"/]'),
     "process": ('["', '"]'),
 }
-# `end` alone is a reserved Mermaid keyword (closes subgraph blocks) — using it as a class name
-# breaks parsing right after it, so the "end" kind gets a differently-named class, endNode.
-_MERMAID_CLASS_NAME = {"end": "endNode"}
-_MERMAID_ID_RE = re.compile(r"[^A-Za-z0-9_]")
-
-
-def _mermaid_id(raw: str) -> str:
-    """Input: a node id from the intent. Output: a safe Mermaid node identifier (plain alphanumeric/underscore, starting with a letter)."""
-    safe = _MERMAID_ID_RE.sub("_", str(raw))
-    return safe if safe and safe[0].isalpha() else f"n_{safe}"
-
-
-def _sanitize_mermaid_text(text: Any) -> str:
-    """Strips characters known to silently break Mermaid parsing (see PROGRESS.md's semicolon gotcha) from label/edge text."""
-    return re.sub(r'[;|`"]', "", str(text)).strip()
-
-
-_BARE_END_RE = re.compile(r"\bend\b")
-
-
-def _rename_reserved_end(mermaid: str) -> str:
-    """
-    Deterministic backstop for the `end`-reserved-keyword gotcha (see PROGRESS.md): `end` breaks
-    Mermaid parsing wherever it's used bare, as a node id or a class name, not just as a class
-    name. A prompt instruction alone isn't reliable here — the subagent is also told to preserve
-    the intent's node ids exactly, and the primary model sometimes names its end node "end", so
-    the two instructions collide. Runs on every emit_mermaid_flowchart output (LLM or fallback)
-    since there's no server-side flowchart validator to catch a slip before it reaches the client.
-    Renames every bare `end` token to `endNode`, skipping quoted label text so a legitimate label
-    containing the word "end" (e.g. "Weekend report") is left alone.
-    """
-    out_lines = []
-    for line in mermaid.splitlines():
-        parts = re.split(r'("[^"]*")', line)
-        for i in range(0, len(parts), 2):  # even indices are outside quoted spans
-            parts[i] = _BARE_END_RE.sub("endNode", parts[i])
-        out_lines.append("".join(parts))
-    return "\n".join(out_lines)
 
 
 def _fallback_mermaid_flowchart(intent: dict[str, Any]) -> dict[str, Any]:
@@ -415,14 +394,14 @@ def _fallback_mermaid_flowchart(intent: dict[str, Any]) -> dict[str, Any]:
     direction = "LR" if intent.get("direction") == "horizontal" else "TD"
     nodes = intent.get("nodes", [])
     edges = intent.get("edges", [])
-    ids = {n["id"]: _mermaid_id(n["id"]) for n in nodes if "id" in n}
+    ids = {n["id"]: mermaid.safe_id(n["id"]) for n in nodes if "id" in n}
 
     lines = [f"flowchart {direction}"]
     for n in nodes:
         kind = n.get("kind") if n.get("kind") in _MERMAID_SHAPE else "process"
         open_b, close_b = _MERMAID_SHAPE[kind]
-        label = _sanitize_mermaid_text(n.get("label", n.get("id", "")))
-        class_name = _MERMAID_CLASS_NAME.get(kind, kind)
+        label = mermaid.sanitize_text(n.get("label", n.get("id", "")))
+        class_name = mermaid.CLASS_NAME.get(kind, kind)
         lines.append(f"    {ids[n['id']]}{open_b}{label}{close_b}:::{class_name}")
     for e in edges:
         source, target = ids.get(e.get("source")), ids.get(e.get("target"))
@@ -430,7 +409,7 @@ def _fallback_mermaid_flowchart(intent: dict[str, Any]) -> dict[str, Any]:
             continue
         label = e.get("label")
         if label:
-            lines.append(f"    {source} -->|{_sanitize_mermaid_text(label)}| {target}")
+            lines.append(f"    {source} -->|{mermaid.sanitize_text(label)}| {target}")
         else:
             lines.append(f"    {source} --> {target}")
 
@@ -503,12 +482,36 @@ def _demo() -> None:
         }
     )
     assert "end([" in end_as_id["mermaid"], "fallback should still emit the raw id before sanitizing"
-    sanitized = _rename_reserved_end(end_as_id["mermaid"])
+    sanitized = mermaid.rename_reserved_end(end_as_id["mermaid"])
     assert "endNode([" in sanitized, sanitized
     assert not re.search(r"\bend\b", sanitized), sanitized
     assert "-->" in sanitized and "endNode" in sanitized.splitlines()[-1]
-    weekend = _rename_reserved_end('    a["Weekend report"]:::process')
+    weekend = mermaid.rename_reserved_end('    a["Weekend report"]:::process')
     assert "Weekend report" in weekend, "a label merely containing the word end must be left alone"
+
+    # _subagent_provider: the turn's own vendor wins when it has a key, and
+    # the fallback still fires when it doesn't (agent-sdk Claude has no key).
+    import os as _os
+
+    saved = {k: _os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+    try:
+        _os.environ["ANTHROPIC_API_KEY"] = "a"
+        _os.environ["OPENAI_API_KEY"] = "o"
+        assert _subagent_provider("openai") == "openai"
+        assert _subagent_provider("claude") == "claude"
+        assert _subagent_provider(None) == "claude"
+
+        _os.environ.pop("ANTHROPIC_API_KEY")
+        assert _subagent_provider("claude") == "openai", "agent-sdk Claude must fall back, not stall"
+
+        _os.environ.pop("OPENAI_API_KEY")
+        assert _subagent_provider("openai") is None
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
 
     print("subagents: all checks passed")
 

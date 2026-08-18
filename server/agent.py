@@ -16,6 +16,7 @@ from server.providers.agent_sdk import run_agent_sdk_agent
 from server.providers.api import run_api_agent
 from server.providers.openai_provider import run_openai_agent
 from server.providers.types import AgentEventStream
+from server import mermaid
 from server.subagents import run_chart_subagent, run_flowchart_subagent
 from server.types import ChatRequestMessage
 
@@ -40,14 +41,9 @@ def _clean_title(title: Any) -> Any:
 
 
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-# A node id only becomes a color if it's a bare Mermaid identifier. The client
-# turns each entry into a `class <id> ncolorN` statement, and Mermaid's parser
-# rejects anything else outright — `class "weird id" ncolor0` is a parse error
-# that takes the entire diagram down with it, not a skipped line (measured; an
-# id that simply doesn't exist in the graph is the harmless case, it renders
-# fine and is ignored). Colors are cosmetic, so a weird id loses its color
-# rather than the user losing their diagram.
-_SAFE_MERMAID_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+# Colors are cosmetic, so a weird id loses its color rather than the user
+# losing their diagram — see mermaid.SAFE_ID_RE for why anything else would
+# take the whole diagram down.
 
 
 def _node_colors(intent: dict[str, Any]) -> dict[str, str]:
@@ -76,12 +72,12 @@ def _node_colors(intent: dict[str, Any]) -> dict[str, str]:
         node_id, color = node.get("id"), node.get("color")
         if not isinstance(node_id, str) or not isinstance(color, str):
             continue
-        if not _HEX_COLOR_RE.match(color.strip()) or not _SAFE_MERMAID_ID_RE.match(node_id):
+        if not _HEX_COLOR_RE.match(color.strip()) or not mermaid.SAFE_ID_RE.match(node_id):
             continue
-        # The one id the subagent is allowed to rename (bare `end` is a reserved
-        # Mermaid keyword) — see subagents._rename_reserved_end, which does the
-        # same rewrite on the source side.
-        colors["endNode" if node_id == "end" else node_id] = color.strip()
+        # The one id the subagent is allowed to rename (bare `end` is a
+        # reserved Mermaid keyword). Same helper the source side uses, so the
+        # two cannot drift apart.
+        colors[mermaid.rename_reserved_id(node_id)] = color.strip()
     return colors
 
 
@@ -183,7 +179,7 @@ async def run_agent(
             yield {"type": "trace", "label": "Active agent: Flowchart Agent"}
             yield {"type": "trace", "label": "Calling render_diagram tool…"}
             colors = _node_colors(event["payload"])
-            payload = await run_flowchart_subagent(event["payload"], last_user_text)
+            payload = await run_flowchart_subagent(event["payload"], last_user_text, option.provider)
             yield {"type": "trace", "label": "Result ready"}
             # `colors` is omitted entirely when the model set none, so an
             # ordinary diagram's payload stays exactly what it was before.
@@ -198,7 +194,7 @@ async def run_agent(
         elif event["type"] == "chart":
             yield {"type": "trace", "label": "Active agent: Data Chart Agent"}
             yield {"type": "trace", "label": "Calling render_chart tool…"}
-            payload = await run_chart_subagent(event["payload"])
+            payload = await run_chart_subagent(event["payload"], option.provider)
             yield {"type": "trace", "label": "Result ready"}
             event = {"type": "chart", "payload": {**payload, "title": _clean_title(payload.get("title"))}}
         yield event

@@ -110,7 +110,7 @@ async def _begin_turn(body: ChatRequestBody, owner_id: ObjectId) -> tuple[Object
     return result.inserted_id, {"type": "conversation", "id": str(result.inserted_id), "title": title}
 
 
-async def _maybe_generate_title(conversation_id: ObjectId) -> dict[str, Any] | None:
+async def _maybe_generate_title(conversation_id: ObjectId, provider: str | None = None) -> dict[str, Any] | None:
     """
     Names a conversation once there's enough of it to name, then locks the
     title so it never churns again.
@@ -129,7 +129,7 @@ async def _maybe_generate_title(conversation_id: ObjectId) -> dict[str, Any] | N
     if not has_visual and len(messages) < TITLE_AFTER_MESSAGES:
         return None
 
-    title = await run_title_subagent(messages)
+    title = await run_title_subagent(messages, provider)
     if not title:
         # No subagent client, or the call failed. Leave the placeholder and
         # stay unlocked so the next turn can try again.
@@ -301,7 +301,7 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
                         {"_id": conversation_id},
                         {"$push": {"messages": turn.reply}, "$set": {"updatedAt": now()}},
                     )
-                    titled = await _maybe_generate_title(conversation_id)
+                    titled = await _maybe_generate_title(conversation_id, option.provider)
                     if titled:
                         yield _sse(titled)
                     # Scheduled, not awaited — see _spawn_memory_ingest. This
