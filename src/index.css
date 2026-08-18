@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* Makes every `dark:` utility follow a `.dark` class on <html> instead of
+   Tailwind v4's default `@media (prefers-color-scheme: dark)`, so the theme
+   picker in Sidebar.tsx can override the OS. src/lib/theme.ts owns that class;
+   index.html sets it pre-paint. */
+@custom-variant dark (&:where(.dark, .dark *));

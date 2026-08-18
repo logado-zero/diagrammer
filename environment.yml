@@ -1,0 +1,26 @@
+name: ui-design
+channels:
+  - conda-forge
+dependencies:
+  - nodejs
+  - python=3.12
+  - pip
+  - pip:
+      - fastapi
+      - uvicorn[standard]
+      - anthropic
+      - openai
+      - claude-agent-sdk
+      - python-dotenv
+      - pydantic
+      - openpyxl
+      # 4.9+ ships AsyncMongoClient natively — motor is deprecated/folded in.
+      - pymongo>=4.9
+      # server/memory/ — the retrieval layer. onnxruntime runs the Harrier
+      # embedding model on CPU (no torch: the ONNX build is the whole point),
+      # tokenizers is the matching HF tokenizer, huggingface_hub downloads and
+      # caches the weights, numpy does the cosine scoring.
+      - numpy
+      - onnxruntime
+      - tokenizers
+      - huggingface_hub
