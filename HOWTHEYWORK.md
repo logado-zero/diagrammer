@@ -1224,11 +1224,11 @@ with its own stylesheet, section rail, spec cards and figure frames, and its
 source is `docs/howtheywork.artifact.html`. Publishing `HOWTHEYWORK.md` over that
 URL would replace the design with plain markdown.
 
-**The repo copy is currently ahead of the live page** (as of 2026-08-18,
-milestone 32). Unpublished in `docs/howtheywork.artifact.html`: the Theming
-section and surface ladder, the delete-confirm note, the completed file map,
-the push-path lead paragraph, and the milestone-32 refactor (`server/routes/`,
-`src/hooks/`, `providers/dispatch.py`).
+**The repo copy and the live page are in sync** as of 2026-08-18, milestone 32.
+That republish carried everything that had been sitting unpublished since
+milestone 30 — the Theming section and surface ladder, the delete-confirm note,
+the completed file map — plus the push-path lead paragraph and the milestone-32
+refactor (`server/routes/`, `src/hooks/`, `providers/dispatch.py`).
 
 To update it: edit `docs/howtheywork.artifact.html`, then republish that file to
 the URL above. The repo copy exists because the first two updates had to

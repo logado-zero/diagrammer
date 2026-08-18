@@ -470,10 +470,12 @@
         <code class="inline">render_diagram</code> / <code class="inline">render_chart</code>
         tool (which one(s) it's even offered depends on the composer's draw-mode selector — see below),
         and the server relays every event straight to the browser over SSE as it happens. Only the last
-        few messages are replayed into the prompt; anything older the model needs, it fetches itself by
-        calling <code class="inline">search_memory</code>, which searches every conversation this user
-        has ever had and hands back each hit tagged with its conversation title and turn number. Two
-        more things happen around the answer: the turn is written to MongoDB as it streams, so a
+        three messages are replayed into the prompt; anything older comes back through the memory
+        layer, which is reached two ways — it retrieves <em>automatically</em>, before the model runs,
+        on any turn that looks like it has a subject, and the model can also call
+        <code class="inline">search_memory</code> itself. Either way it searches every conversation
+        this user has ever had and hands back each hit tagged with its conversation title and turn
+        number. Two more things happen around the answer: the turn is written to MongoDB as it streams, so a
         signed-in user can reopen the conversation later with its charts intact, and once the stream
         closes it is indexed into that same memory layer. Every request is handled
         concurrently, so multiple users can chat at once without blocking each other. Once a
@@ -493,13 +495,13 @@ flowchart LR
         Auth["AuthScreen&lt;br/&gt;sign in / sign up / guest"]
         Side["Sidebar&lt;br/&gt;saved conversations"]
         UI["WelcomeScreen / ChatView / Composer"]
-        App["App.tsx&lt;br/&gt;owns all chat state"]
+        App["App.tsx + src/hooks/&lt;br/&gt;all client state"]
         Api["lib/api.ts&lt;br/&gt;streamChat / fetchModels&lt;br/&gt;auth + conversation calls"]
         Canvas["CanvasPanel&lt;br/&gt;latest diagram/chart, full size&lt;br/&gt;(DiagramCard / ChartCard)"]
     end
 
     subgraph Server["Backend (server/*.py) — FastAPI"]
-        Main["main.py&lt;br/&gt;FastAPI routes · persists each turn&lt;br/&gt;· schedules memory ingest"]
+        Main["routes/chat.py&lt;br/&gt;relays SSE · persists each turn&lt;br/&gt;· schedules memory ingest"]
         AuthPy["auth.py&lt;br/&gt;scrypt passwords,&lt;br/&gt;session cookie to user"]
         Db["db.py&lt;br/&gt;users / sessions / conversations&lt;br/&gt;memory_units / GridFS"]
         Mem["memory/&lt;br/&gt;index_turn() · search_memory()"]
@@ -569,7 +571,7 @@ sequenceDiagram
     participant U as User
     participant C as Composer/App.tsx
     participant A as lib/api.ts
-    participant S as server/main.py
+    participant S as server/routes/chat.py
     participant M as MongoDB
     participant G as agent.py -> provider
     participant L as Claude/OpenAI
@@ -640,7 +642,7 @@ sequenceDiagram
       <dl class="deflist">
         <div>
           <dt>One choke point per concern</dt>
-          <dd><code class="inline">agent.py</code>'s <code class="inline">run_agent()</code> is the single place every provider's output passes through, so attachment inlining, the subagent pass and trace events live there rather than three times over. The same instinct puts persistence and memory ingest in <code class="inline">main.py</code> (route concerns, not generation concerns) and the tool list in <code class="inline">tools.py</code>. When a feature needs <em>different</em> handling per provider — web search's tool definitions — that's the signal it doesn't belong in a choke point.</dd>
+          <dd><code class="inline">agent.py</code>'s <code class="inline">run_agent()</code> is the single place every provider's output passes through, so attachment inlining, the subagent pass and trace events live there rather than three times over. The same instinct puts persistence and memory ingest in <code class="inline">routes/chat.py</code> (route concerns, not generation concerns) and the tool list in <code class="inline">tools.py</code>. When a feature needs <em>different</em> handling per provider — web search's tool definitions — that's the signal it doesn't belong in a choke point.</dd>
         </div>
         <div>
           <dt>…but only on outputs</dt>
@@ -729,7 +731,7 @@ sequenceDiagram
         <div class="figure-body">
 <pre class="mermaid">
 flowchart TB
-    DONE["'done' event in main.py's event_stream()"]
+    DONE["'done' event in routes/chat.py's event_stream()"]
     PUSH["store the assistant turn (existing)"]
     CLOSE["SSE stream closes — user has their answer"]
 
@@ -915,7 +917,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
         each hit's rank, conversation, ids,
         <code class="inline">seq</code>/<code class="inline">role</code>/<code class="inline">kind</code>,
         score, <code class="inline">viewScores</code> and a capped text preview. Both entry points yield
-        it as a <code class="inline">retrieval</code> event and <code class="inline">main.py</code> files
+        it as a <code class="inline">retrieval</code> event and <code class="inline">routes/chat.py</code> files
         it into <code class="inline">agent_logs.steps</code>, then <code class="inline">continue</code>s
         <em>before</em> the SSE yield: it is the one event the browser never sees. The chat UI gets a
         "Recalling from memory…" or "Searching memory…" status line and nothing else.
@@ -973,7 +975,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
         <code class="inline">search_memory</code>'s schema has exactly one field. There is no owner or
         conversation parameter, so the model cannot widen what it sees and a prompt injection inside a
         retrieved document has nothing to aim at. The <code class="inline">Scope</code> comes from the
-        session cookie via <code class="inline">main.py</code>'s
+        session cookie via <code class="inline">routes/chat.py</code>'s
         <code class="inline">_memory_scope()</code>, which returns <code class="inline">None</code> when
         <code class="inline">MEMORY_ENABLED=0</code> — and <code class="inline">None</code> removes the
         tool <em>and</em> its prompt text, leaving a request byte-identical to what the app sent before
@@ -1041,7 +1043,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
         model chose to search. The <em>cold</em> number is the one that bites: the encoder loads lazily
         and that first load is ~4&thinsp;s, which would land on the first turn after every boot and
         <code class="inline">--reload</code>, reliably enough to trip the retrieval timeout and answer
-        that turn with no memory at all. <code class="inline">main.py</code> schedules a warm-up at
+        that turn with no memory at all. <code class="inline">main.py</code>'s <code class="inline">lifespan</code> schedules a warm-up at
         startup so nobody's first question pays for it.
         <br /><br />
         Edges are pairwise, so their write cost is quadratic in entities per unit. Hence the caps: 24
@@ -1218,7 +1220,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
         <p>
           The composer's mode popover restricts <em>which tool the primary model is offered</em>, not a
           forced tool call. <code class="inline">ChatRequestBody.mode</code> flows from
-          <code class="inline">main.py</code> through <code class="inline">agent.py</code> into whichever
+          <code class="inline">routes/chat.py</code> through <code class="inline">agent.py</code> into whichever
           provider ran, and each one asks <code class="inline">tools.py</code>'s
           <code class="inline">tools_for_mode(mode, memory=…)</code> for its tool list instead of always
           passing both.
@@ -1484,7 +1486,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
           collapses itself, with a manual click winning from then on. It used to render only while
           <code class="inline">isStreaming &amp;&amp; !text</code> and vanish the instant the reply began;
           keeping it costs one collapsed row and answers "did this turn search anything?" after the fact.
-          <code class="inline">main.py</code> persists <code class="inline">reply["trace"]</code>, so the
+          <code class="inline">routes/chat.py</code> persists <code class="inline">reply["trace"]</code>, so the
           labels survive a reload too.
         </p>
       </div>
@@ -1501,7 +1503,7 @@ data: {"title":"Revenue by region","chartType":"bar",…}</pre>
           attachment, resolves the model catalog entry, and dispatches to exactly one of
           <code class="inline">server/providers/{api,agent_sdk,openai_provider}.py</code>, each streaming
           the same event shape. A <code class="inline">diagram</code>/<code class="inline">chart</code>
-          event is intercepted there before it ever reaches <code class="inline">main.py</code>, run
+          event is intercepted there before it ever reaches <code class="inline">routes/chat.py</code>, run
           through the matching subagent, and rewrapped with the <code class="inline">trace</code> events
           described above. Back in <code class="inline">event_stream()</code>, each event is re-emitted to
           the browser as SSE <em>and</em> accumulated — <code class="inline">text</code> appends to the
@@ -1526,7 +1528,7 @@ flowchart TD
     Oai["providers/openai_provider.py&lt;br/&gt;OpenAI model picked"]
     Ev{"AgentEvent type?"}
     Sub["subagents.py&lt;br/&gt;polish diagram/chart payload,&lt;br/&gt;emit trace events around it"]
-    Emit["event_stream() — main.py&lt;br/&gt;re-emit as SSE + accumulate reply"]
+    Emit["event_stream() — routes/chat.py&lt;br/&gt;re-emit as SSE + accumulate reply"]
     Client(["browser&lt;br/&gt;renders each event live"])
     Loop{"more events&lt;br/&gt;from the provider?"}
     Persist["persist assistant message&lt;br/&gt;+ insert agent_logs turn"]
@@ -1542,7 +1544,8 @@ flowchart TD
     Oai --> Ev
     Ev -->|diagram / chart| Sub --> Emit
     Ev -->|text / trace / error / done| Emit
-    Emit -.->|data: event| Client
+    Ev -->|retrieval| Emit
+    Emit -.->|data: event — every type except retrieval| Client
     Emit --> Loop
     Loop -->|yes| Ev
     Loop -->|no — done| Persist
@@ -1592,7 +1595,7 @@ flowchart TD
 
       <div class="callout" style="margin-top: 14px;">
         <strong>The push path needed no change here at all.</strong> When automatic retrieval landed,
-        <code class="inline">main.py</code> already relayed <code class="inline">trace</code> and already
+        <code class="inline">routes/chat.py</code> already relayed <code class="inline">trace</code> and already
         filed <code class="inline">retrieval</code> without forwarding it — so
         <code class="inline">agent.py</code> emitting those two events before the provider starts was the
         entire wiring. That is what a choke point is worth: the event type built for one caller carried a
@@ -1726,7 +1729,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
         </div>
         <p class="figure-caption">A message's <code class="inline">attachment</code> is
         <code class="inline">{blobId, mediaType, kind: "image" | "file", name?}</code> — a
-        reference into this same GridFS bucket, uploaded by <code class="inline">main.py</code>'s
+        reference into this same GridFS bucket, uploaded by <code class="inline">routes/chat.py</code>'s
         <code class="inline">_stored_user_message()</code> and turned into a fetchable
         <code class="inline">GET /api/attachments/{blobId}</code> URL when a conversation is
         reopened, so switching away and back never loses what was attached.
@@ -1750,7 +1753,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
           </ul>
         </div>
         <div class="spec">
-          <span class="spec-tag">server/main.py</span>
+          <span class="spec-tag">server/routes/chat.py</span>
           <h3>Saving a turn</h3>
           <ul>
             <li>Happens inside <code class="inline">POST /api/chat</code>'s <code class="inline">event_stream()</code>, <em>not</em> in <code class="inline">agent.py</code> — <code class="inline">run_agent()</code>'s job is provider dispatch, and persistence has no business in it.</li>
@@ -1767,7 +1770,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
       <div class="callout">
         <strong>The subtle part: retry.</strong> <code class="inline">_begin_turn()</code> truncates the
         stored message array to the client's history length <em>before</em> appending, rather than blindly
-        pushing. That's what makes retry correct — <code class="inline">App.tsx</code>'s
+        pushing. That's what makes retry correct — <code class="inline">useChatTurn</code>'s
         <code class="inline">handleRetry</code> re-sends a <em>shorter</em> history, and
         truncate-then-append makes the stored array follow it instead of accumulating a duplicate copy of
         the turn being retried. A plain <code class="inline">$push</code> silently doubles history every
@@ -1797,8 +1800,8 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
         <div class="chain-item">
           <div class="chain-index">01</div>
           <div>
-            <div class="file">src/App.tsx</div>
-            <p>The only stateful component. The signed-in user, the saved conversation list, all chat messages, the selected model, and the pending attachment (image/text/sheet) live here in <code class="inline">useState</code>. Everything else is either a dumb view or a fetch wrapper.</p>
+            <div class="file">src/App.tsx + src/hooks/</div>
+            <p>All client state, in four hooks that <code class="inline">App.tsx</code> wires together before picking a screen: <code class="inline">useAuth</code> (the signed-in user), <code class="inline">useConversations</code> (the saved list, which one is open, its title), <code class="inline">useChatTurn</code> (messages, streaming, retry, and the reducer that folds each SSE event into a message), and <code class="inline">useComposer</code> (the unsent draft and pending attachment, cleared together). Everything under <code class="inline">src/components/</code> is a props-in view.</p>
           </div>
         </div>
         <div class="chain-item">
@@ -1811,8 +1814,8 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
         <div class="chain-item">
           <div class="chain-index">03</div>
           <div>
-            <div class="file">server/main.py</div>
-            <p>The entire HTTP surface, all <code class="inline">async def</code>: <code class="inline">/api/chat</code>, <code class="inline">/api/models</code>, <code class="inline">/api/health</code>, the conversation routes, and the auth router it includes from <code class="inline">server/auth.py</code>. <code class="inline">/api/chat</code> loops over <code class="inline">run_agent(...)</code> and re-emits whatever it yields as an SSE event, persisting the turn around it — it does no LLM logic itself.</p>
+            <div class="file">server/routes/chat.py</div>
+            <p><code class="inline">POST /api/chat</code>, all <code class="inline">async def</code>: it loops over <code class="inline">run_agent(...)</code> and re-emits whatever it yields as an SSE event, persisting the turn around it — no LLM logic itself. Its siblings in <code class="inline">server/routes/</code> hold the rest of the surface (<code class="inline">meta.py</code>, <code class="inline">conversations.py</code>, <code class="inline">attachments.py</code>), auth stays in <code class="inline">server/auth.py</code>, and <code class="inline">server/main.py</code> is app construction only — CORS, the body-size guard, the Mongo error handler, startup, and <code class="inline">include_router()</code>.</p>
           </div>
         </div>
         <div class="chain-item">
@@ -1826,7 +1829,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
           <div class="chain-index">05</div>
           <div>
             <div class="file">server/providers/{api,agent_sdk,openai_provider}.py</div>
-            <p>One file per backend transport, each independently readable. All three are <code class="inline">async def ... yield ...</code> generator functions producing the same <code class="inline">AgentEvent</code> dict shape, so <code class="inline">main.py</code> never branches on which one ran. Each also answers <code class="inline">search_memory</code> in its own tool loop — the one thing that can't be centralized in <code class="inline">agent.py</code>.</p>
+            <p>One file per backend transport, each independently readable. All three are <code class="inline">async def ... yield ...</code> generator functions producing the same <code class="inline">AgentEvent</code> dict shape, so <code class="inline">routes/chat.py</code> never branches on which one ran. Each also answers <code class="inline">search_memory</code> in its own tool loop — the one thing that can't be centralized in <code class="inline">agent.py</code>.</p>
           </div>
         </div>
         <div class="chain-item">
@@ -1882,7 +1885,16 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
           <tbody>
             <tr><td class="path">index.html</td><td>The shell — plus the pre-paint script that applies the saved theme before React mounts</td></tr>
             <tr><td class="path">src/index.css</td><td>The whole stylesheet: <code class="inline">@import "tailwindcss"</code> plus the <code class="inline">@custom-variant dark</code> line that makes <code class="inline">dark:</code> class-driven</td></tr>
-            <tr><td class="path">src/App.tsx</td><td>Owns the signed-in user, conversation list, chat state, pending attachment, model selection, retry</td></tr>
+            <tr><td class="path">src/main.tsx</td><td>Mounts <code class="inline">&lt;App /&gt;</code> into <code class="inline">#root</code></td></tr>
+            <tr><td class="path">src/App.tsx</td><td>Wires the four state hooks together and picks a screen (AuthScreen / WelcomeScreen / ChatView)</td></tr>
+            <tr><td class="path">src/hooks/useAuth.ts</td><td>The session: user, authChecked, sign-out</td></tr>
+            <tr><td class="path">src/hooks/useConversations.ts</td><td>Saved history: the sidebar list, which conversation is open, its title</td></tr>
+            <tr><td class="path">src/hooks/useChatTurn.ts</td><td>The live turn: messages, isStreaming, runTurn/retry, and the ServerEvent → ChatMessage reducer</td></tr>
+            <tr><td class="path">src/hooks/useComposer.ts</td><td>Unsent draft + pending attachment, cleared together</td></tr>
+            <tr><td class="path">src/hooks/usePersistedState.ts</td><td><code class="inline">useState</code> that writes through to localStorage (model, draw mode, sidebar)</td></tr>
+            <tr><td class="path">src/hooks/useImageExport.ts</td><td>Copy-image / download-as-PNG-or-JPG, shared by both canvas cards</td></tr>
+            <tr><td class="path">src/lib/storage.ts</td><td><code class="inline">STORAGE_KEYS</code> — every localStorage key the app writes</td></tr>
+            <tr><td class="path">src/components/CardChrome.tsx</td><td>The shell both canvas cards share, plus <code class="inline">ExportActions</code></td></tr>
             <tr><td class="path">src/types.ts</td><td>Shared client types: <code class="inline">ChatMessage</code>, <code class="inline">ServerEvent</code>, <code class="inline">RenderDiagramInput</code>/<code class="inline">RenderChartInput</code>, <code class="inline">ConversationSummary</code>, <code class="inline">DrawMode</code></td></tr>
             <tr><td class="path">src/lib/api.ts</td><td><code class="inline">streamChat()</code> (SSE client), <code class="inline">fetchModels()</code>, <code class="inline">withVisualContext()</code> (replays prior diagrams/charts to the model), and the auth/conversation calls</td></tr>
             <tr><td class="path">src/components/AuthScreen.tsx</td><td>Sign in / sign up / continue as guest — shown whenever there's no valid session</td></tr>
@@ -1904,7 +1916,13 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
             <tr><td class="path">src/lib/useDismissablePopover.ts</td><td>Outside-click + Escape dismissal ref, shared by the composer's three popovers and both cards' download menus</td></tr>
             <tr><td class="path">src/lib/demoData.ts</td><td><code class="inline">DEMO_MESSAGES</code> — the pre-seeded chat <code class="inline">?demo=1</code> renders instead of signing in</td></tr>
             <tr><td class="path">src/lib/slugify.ts</td><td>Conversation title → download filename stem; strips diacritics via NFD</td></tr>
-            <tr><td class="path">server/main.py</td><td>FastAPI routes: /api/chat, /api/models, /api/health, /api/conversations*, /api/conversations/{id}/logs, /api/attachments/{blobId}; persists each turn as it streams plus its <code class="inline">agent_logs</code> entry and attachment blob, schedules memory ingest, cascades deletes</td></tr>
+            <tr><td class="path">server/main.py</td><td>App construction only: CORS, body-size guard, the app-wide <code class="inline">PyMongoError</code> handler, <code class="inline">lifespan</code> startup, <code class="inline">include_router()</code></td></tr>
+            <tr><td class="path">server/routes/meta.py</td><td>/api/health, /api/models</td></tr>
+            <tr><td class="path">server/routes/conversations.py</td><td>/api/conversations*, /api/conversations/{id}/logs, and the delete cascade</td></tr>
+            <tr><td class="path">server/routes/attachments.py</td><td>/api/attachments/{blobId}</td></tr>
+            <tr><td class="path">server/routes/chat.py</td><td>/api/chat: the SSE relay, turn persistence, <code class="inline">agent_logs</code>, titling, memory-ingest scheduling</td></tr>
+            <tr><td class="path">server/shared.py</td><td><code class="inline">now()</code> (naive UTC), <code class="inline">owner_filter()</code> (the tenancy term), <code class="inline">object_id()</code>, <code class="inline">owned_conversation()</code>, <code class="inline">spawn()</code></td></tr>
+            <tr><td class="path">server/mermaid.py</td><td>The Mermaid rules two modules must agree on: <code class="inline">end</code> → <code class="inline">endNode</code>, id/label sanitising</td></tr>
             <tr><td class="path">server/auth.py</td><td>scrypt password hashing, <code class="inline">current_user()</code> dependency, /api/auth/{register,login,guest,logout,me}</td></tr>
             <tr><td class="path">server/db.py</td><td>MongoDB <code class="inline">chart-chatbot</code> — users/sessions/conversations/memory_units/agent_logs handles, the GridFS attachment bucket, and <code class="inline">ensure_indexes()</code></td></tr>
             <tr><td class="path">server/agent.py</td><td><code class="inline">run_agent()</code> — inlines file attachments, picks Claude transport (api vs agent-sdk) or OpenAI, emits trace events and routes diagram/chart events through subagents.py; <code class="inline">_node_colors()</code> and <code class="inline">_clean_title()</code> clean the payload on the way out</td></tr>
@@ -1912,6 +1930,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
             <tr><td class="path">server/subagents.py</td><td>Flowchart Agent / Data Chart Agent — second-pass LLM calls that polish a diagram/chart payload before it's sent to the client — plus <code class="inline">run_title_subagent()</code>, which names a saved conversation</td></tr>
             <tr><td class="path">server/models.py</td><td><code class="inline">MODEL_CATALOG</code>, <code class="inline">find_model_option()</code>, <code class="inline">is_model_available()</code></td></tr>
             <tr><td class="path">server/types.py</td><td>The pydantic request bodies — the only shapes actually validated at runtime; the diagram/chart payloads are <code class="inline">TypedDict</code>s for documentation only</td></tr>
+            <tr><td class="path">server/providers/dispatch.py</td><td>Tool name → client event + model-facing result, and the trace labels. Shared by <code class="inline">api.py</code> and <code class="inline">openai_provider.py</code>; <code class="inline">agent_sdk.py</code> takes the constants only</td></tr>
             <tr><td class="path">server/providers/types.py</td><td>The <code class="inline">AgentEvent</code> dict shape all three providers yield — a type hint, not a validated model</td></tr>
             <tr><td class="path">server/providers/api.py</td><td>Claude via anthropic's AsyncAnthropic (metered, supports images, declares the <code class="inline">web_search</code>/<code class="inline">web_fetch</code> server tools)</td></tr>
             <tr><td class="path">server/providers/agent_sdk.py</td><td>Claude via local claude CLI subprocess (Pro/Max login, dev-only, no images, <code class="inline">WebSearch</code>/<code class="inline">WebFetch</code> built-ins on)</td></tr>
