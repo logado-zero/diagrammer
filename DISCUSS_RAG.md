@@ -4,14 +4,20 @@
 Target: many concurrent users, self-hosted, multilingual, multimodal, CPU-first.
 
 Status: **phases 1–3 are built** (see `PROGRESS.md` milestones 23, 26 and 29).
-This document is kept as the design of record and is *not* edited to match the
-code — where the two disagree, the code is what runs. Two disagreements worth
-knowing before you trust a section: §9's claim that the entity graph is
-populated from day one "so there is nothing to backfill later" was never true of
-the build (`python -m server.memory.backfill` exists because of it), and §20's
-phase ordering assumed an evaluation set (§16) that still does not exist, so the
-fusion weights shipped as fixed constants rather than tuned ones. Phase 4
-(multimodal, §8) and `Route(q)` remain unbuilt.
+
+This started as the design of record, written before the build and deliberately
+left unedited afterwards. As of milestone 32 the sections that shipped
+*differently* have been rewritten to describe what actually runs — each one
+keeping a line saying what the design argued and where the decision to diverge
+is recorded, so the original reasoning is still readable. Sections that shipped
+as designed are untouched.
+
+Where a section still describes something unbuilt it says so. Still unbuilt:
+Phase 4 (multimodal, §8), `Route(q)` and therefore tuned fusion weights (§16
+never got its evaluation set, so the weights shipped as honest constants), and
+prompt caching (§10). §9's claim that the entity graph is populated from day one
+"so there is nothing to backfill later" was never true of the build —
+`python -m server.memory.backfill` exists because of it.
 
 > **How to read this.** Sections 1–3 are the reasoning and the transferable lessons.
 > Sections 4–12 are the design. Sections 13–19 are what turns a working prototype into
@@ -109,10 +115,16 @@ the subscription because it shells out to *this machine's* local `claude` CLI.
 Production means setting `ANTHROPIC_API_KEY`, so `resolve_claude_transport()` returns
 `'api'`. That is also the only transport with prompt caching and image input.
 
-**3.2 — The encoder must never block the event loop.** Every route in `main.py` is
-`async def` on one loop, and the app's entire concurrency story rests on that. A
-synchronous `sentence-transformers` call in-process stalls *every* concurrent user for
-the duration of the forward pass. The encoder runs out-of-process (§7).
+**3.2 — The encoder must never block the event loop.** Every route in
+`server/routes/` is `async def` on one loop, and the app's entire concurrency
+story rests on that. A synchronous forward pass on the loop stalls *every*
+concurrent user for its duration.
+
+*Shipped differently:* the design called for an out-of-process encoder sidecar.
+The build runs onnxruntime **in-process**, pushed off the loop with
+`asyncio.to_thread()` and capped by a `Semaphore` (`server/memory/encoder.py`).
+Same guarantee, no second process to deploy, supervise or version-match. The
+rejection is recorded in `PROGRESS.md` under rejected alternatives.
 
 **3.3 — Local MongoDB Community has no `$vectorSearch`.** That operator is Atlas-only.
 Vector scoring happens in the app process behind an interface, with a stated ceiling
@@ -164,33 +176,40 @@ inherits it.
 
 ---
 
-## 5. Ports and adapters
+## 5. Module boundaries
 
-Three interfaces. Everything else is free to change behind them.
+*Shipped differently.* The design specified three `Protocol` classes —
+`Encoder`, `UnitStore`, `GraphStore` — so the encoder and the vector store
+could each be swapped behind an interface. **There is no `Protocol` anywhere in
+`server/`.** What shipped is flat modules of functions with those same
+signatures:
 
 ```python
-class Encoder(Protocol):
-    model_id: str          # travels with every vector it produces (§15)
-    dim: int
-    async def encode(self, texts: list[str], *, is_query: bool) -> list[bytes]: ...
+# server/memory/encoder.py
+EMBED_MODEL_NAME: str          # travels with every vector it produces (§15)
+EMBED_DIM: int
+async def encode(texts: list[str], *, is_query: bool) -> list[bytes]: ...
 
-class UnitStore(Protocol):
-    async def put(self, units: list[MemoryUnit]) -> None: ...
-    async def recent(self, scope: Scope, n: int) -> list[MemoryUnit]: ...
-    async def lexical(self, scope: Scope, terms: str, k: int) -> list[Scored]: ...
-    async def dense(self, scope: Scope, vec: bytes, k: int) -> list[Scored]: ...
+# server/memory/store.py   — every function takes Scope first, by rule
+async def put_units(scope, units: list[MemoryUnit]) -> None: ...
+async def recent(scope, n: int) -> list[MemoryUnit]: ...
+async def lexical(scope, terms: str, k: int) -> list[Scored]: ...
+async def dense(scope, vec: bytes, k: int) -> list[Scored]: ...
 
-class GraphStore(Protocol):
-    async def neighbours(self, scope: Scope, entities: list[str]) -> Subgraph: ...
+# server/memory/graph.py
+async def graph_view(scope, entities: list[str], k: int) -> list[Scored]: ...
 ```
 
-Two things this buys, both already scheduled rather than speculative:
+The interfaces were dropped because a `Protocol` with exactly one
+implementation is a cost with no reader: it doubles the number of places a
+signature is written and buys nothing until a second implementation exists. The
+swap argument survives anyway — the seam is the *function signature*, and a
+Qdrant `dense()` replaces this one just as cleanly whether or not a `Protocol`
+sits above it.
 
-- **`Encoder`** — swapping Harrier for whatever ships next year, or adding a second
-  encoder for images (§8), touches one adapter.
-- **`UnitStore.dense`** — the in-process numpy implementation and a future Qdrant
-  adapter are the same signature. Migration becomes a config change plus a backfill,
-  not a rewrite.
+The boundary that did turn out to matter is not either of these: it is `Scope`
+being the mandatory first argument of every store function (§13), which is
+enforced by the type rather than by an interface.
 
 `Scope` is a value object carrying `owner_id` and optional `conversation_id`. It is the
 *only* way to express a query filter — see §13 for why that matters more than it looks.
@@ -253,13 +272,22 @@ model.encode(documents)                                  # documents: none
 **2. It is decoder-only with last-token pooling.** That is an unusual architecture for
 an embedding model, and **TEI may not support it** — TEI's architecture support is
 explicit, not automatic. Verify before assuming. The guaranteed-working CPU path is the
-published ONNX build behind `onnxruntime` in a small sidecar; that is also leaner than
+published ONNX build behind `onnxruntime`; that is also leaner than
 TEI on CPU, since TEI's advantages (Flash Attention, aggressive batching) are GPU-side.
 
-> **Serving decision.** ONNX Runtime sidecar, called over `httpx` (already installed
-> transitively via `anthropic`/`openai` — no new dependency). Upgrade to TEI on GPU
-> only if encode latency shows up in traces, and only after confirming architecture
-> support.
+> **Serving decision (as shipped).** ONNX Runtime **in-process**, not a sidecar:
+> `server/memory/encoder.py` loads the published ONNX build once and runs each
+> forward pass through `asyncio.to_thread()` behind a `Semaphore`, so the event
+> loop is never blocked and concurrent encodes are bounded. The design called
+> for a separate process spoken to over `httpx`; that bought isolation nobody
+> needed and cost a second process to deploy, supervise and version-match
+> against the vectors already in the database. Upgrade to TEI on GPU only if
+> encode latency shows up in traces, and only after confirming architecture
+> support for a decoder-only model.
+>
+> The one real consequence of loading in-process: the first encode after a boot
+> pays ~4s of weight loading, which is why `main.py`'s `lifespan` schedules a
+> throwaway warm-up encode at startup (§19).
 
 **What this costs elsewhere:** BGE-M3 emits sparse lexical weights in the same forward
 pass, which I had floated as a free multilingual signal for entity extraction. Harrier
@@ -335,10 +363,19 @@ flowchart TB
     F --> OUT["R(q)"]
 ```
 
-**Blobs never go in MongoDB.** `db.py` already notes the 16 MB document ceiling, and
-`main.py` deliberately drops attachments before persisting a turn. Images and source
-spreadsheets go to S3-compatible object storage (MinIO self-hosted); the unit holds a
-key, not bytes.
+**Blobs never go in a MongoDB *document*.** `db.py` notes the 16 MB document
+ceiling, and the chat route deliberately drops raw attachments before persisting
+a turn — the unit holds a reference, not bytes.
+
+*Shipped differently:* the design sent them to S3-compatible object storage
+(MinIO, self-hosted). The build uses **GridFS, inside the same MongoDB**
+(`server/db.py`'s bucket, written via `memory/store.py`'s `save_blob()`), and
+the field is `blobId`, not `blobKey`. GridFS chunks around the document limit,
+so the ceiling this section was really about is still handled, and it removes an
+entire service from the deployment for a self-hosted app whose blob volume is a
+few images per conversation. The rejection is recorded in `PROGRESS.md`. If blob
+volume ever justifies object storage, the seam is `save_blob()`/the `blobId`
+field, not this paragraph.
 
 ---
 
@@ -369,6 +406,15 @@ Personalized PageRank stays ~15 lines of power iteration over a dict-of-dicts.
 ---
 
 ## 10. Retrieval and prompt caching must be composed deliberately
+
+**Unbuilt.** There is no `cache_control` anywhere in `server/providers/` — no
+provider sets a cache breakpoint today, so nothing below is currently in
+effect. It is kept because the ordering constraint it describes is a property
+of *where retrieved context is placed in the prompt*, and the build already
+places it the way this section requires: `agent.py` appends retrieved evidence
+to the **last** message rather than to the system prompt, so turning caching on
+later does not require re-architecting the prompt. Read this before adding
+`cache_control`, not as a description of what runs.
 
 **Easy to get wrong, expensive to discover later.**
 
@@ -418,7 +464,7 @@ memory_units {
   role:        "user" | "assistant",
   text:        original text — never a summary,
   payload:     raw tool dict, for chart/diagram,
-  blobKey:     object-store key, for sheet/image,
+  blobId:      GridFS file id, for sheet/image,   // design said blobKey/S3 — §8
   seq, at:     position + timestamp,
 
   entities:    [ "SJC", "2026-Q1", ... ],  // populated from day one — §9
@@ -444,6 +490,14 @@ Indexes:
 { text: "text" }                                  // lexical signal
 ```
 
+Plus two on `memory_edges` this section originally omitted, both created by
+`ensure_indexes()` alongside the five above:
+
+```
+{ ownerId: 1, src: 1 }                            // adjacency lookup
+{ ownerId: 1, src: 1, dst: 1 }  (unique)          // one edge per pair, upserted
+```
+
 **Scoping is what makes this scale.** Every query filters `ownerId` first, so cost
 tracks one user's history depth, not the size of the user base. A thousand users do not
 slow any single query.
@@ -456,7 +510,7 @@ Indexing must never delay the stream the user is watching.
 
 ```mermaid
 flowchart TB
-    DONE["'done' event in event_stream()"]
+    DONE["'done' event in routes/chat.py's event_stream()"]
     PUSH["$push assistant turn → conversations<br/>existing behaviour, unchanged"]
     YIELD["yield SSE 'done' → client<br/>stream closes here"]
     SPAWN["spawn task, held in a module-level set"]
@@ -466,7 +520,7 @@ flowchart TB
         SPLIT["Split turn into units<br/>text · chart · diagram · sheet · image"]
         BLOB["Blobs → object store"]
         NER["Extract entities"]
-        EMB["Batch encode → ONNX sidecar"]
+        EMB["Batch encode → ONNX, via to_thread"]
         WRITE["insert_many → units + edges"]
         SPLIT --> BLOB --> NER --> EMB --> WRITE
     end
@@ -519,7 +573,7 @@ Memory is an enhancement. Decide now what happens when each dependency fails.
 
 | Failure | Behaviour | User sees |
 |---|---|---|
-| Encoder sidecar down | Skip dense; lexical + recent window only | Slightly worse recall |
+| Encoder unavailable (weights missing, load failed) | Skip dense; lexical + recent window only | Slightly worse recall |
 | Encoder slow (> budget) | Time out, same as above | Normal latency |
 | Graph view errors | Fall back to hierarchy-only | Slightly worse on multi-hop |
 | Object store down | Text units still retrieved; blob refs unresolved | Missing image context |
@@ -600,7 +654,7 @@ What to emit from `select_context`, per request:
   invalidating the prefix (§10) and it is costing you 1.25× on every turn.
 - **Degradation events** — every fallback in §14, counted. Silent degradation that
   nobody notices for a month is worse than an outage.
-- **Encoder queue depth** — the leading indicator that the sidecar needs a GPU.
+- **Encoder semaphore wait time** — the leading indicator that the encoder needs a GPU (or more workers).
 
 ---
 
@@ -623,15 +677,22 @@ does on real traffic before it can affect anyone.
 The app already scales by running more uvicorn workers, and this design must not break
 that.
 
-- **No shared mutable state.** Per-worker LRU caches of a user's vector matrix are
-  caches, never state — correctness must never depend on a hit.
-- **The encoder sidecar is stateless.** Run two behind the load balancer; it is not a
-  single point of failure by design.
-- **Background indexing tasks are per-worker.** Fine — they are idempotent by unit ID.
-  If you later need ordering or retries across workers, that is the moment to introduce
-  a real queue, not before.
-- **Rough sizing:** 640-d float32 = 2.5 KB/unit. 10k units/user ≈ 25 MB. Loading that
-  from Mongo dominates the dot product, which is why the LRU exists.
+- **No shared mutable state.** Still true, and it is why more workers need no
+  code changes.
+- **The vector cache was never built.** This section assumed a per-worker LRU
+  cache of each user's vector matrix. There is none: `store.dense()` reads that
+  user's vectors out of MongoDB on every query. That is the honest current
+  ceiling, not an oversight — see §21, where it is the named upgrade path.
+- **The encoder runs in-process, one per worker** (§3.2/§7), not as a shared
+  sidecar. Each worker therefore pays its own ~4s model load once, at startup,
+  via the warm-up in `main.py`'s `lifespan`. Memory cost is per worker too:
+  budget for N copies of the model, not one.
+- **Background indexing tasks are per-worker.** Fine — they are idempotent by
+  unit ID. If you later need ordering or retries across workers, that is the
+  moment to introduce a real queue, not before.
+- **Rough sizing:** 640-d float32 = 2.5 KB/unit. 10k units/user ≈ 25 MB.
+  Loading that from Mongo dominates the dot product — which is exactly why the
+  LRU is the first thing to add when this starts to hurt.
 
 ---
 
@@ -642,7 +703,9 @@ regardless, so no later phase requires reprocessing history.
 
 ### Phase 0 — Prerequisites and measurement
 
-Set `ANTHROPIC_API_KEY` (§3.1). Stand up the ONNX encoder sidecar. Then measure:
+Set `ANTHROPIC_API_KEY` (§3.1) — *still not set on this machine; the app runs
+the OpenAI provider instead.* Load the ONNX encoder (in-process, §7 — the
+sidecar this originally called for was not built). Then measure:
 
 ```javascript
 db.conversations.aggregate([
@@ -658,8 +721,8 @@ Add prompt caching (§10) — worth it independently of everything else.
 
 ### Phase 1 — Full schema, hierarchy view, shadow mode
 
-`memory_units` + `memory_edges`, the three ports, background indexing, entity
-extraction writing edges. Query path uses the **hierarchy view only**; graph flag off.
+`memory_units` + `memory_edges`, background indexing, entity extraction writing
+edges. (The "three ports" of §5 shipped as plain modules, not `Protocol`s.) Query path uses the **hierarchy view only**; graph flag off.
 Runs in shadow (§18). Tenant-isolation test (§13) is a merge blocker.
 
 ### Phase 2 — Live hierarchy retrieval, cross-conversation
@@ -673,10 +736,13 @@ Enable PPR at query time. The edges are already there from Phase 1 — nothing t
 backfill. Tune `ρ` and `γ` against the same golden set, and confirm the paper's
 complementarity result holds on your traffic.
 
-### Phase 4 — Multimodal
+### Phase 4 — Multimodal *(unbuilt)*
 
-Image encoder as a second `Encoder`, object storage, sheet row-window units. The fusion
-code is unchanged from Phase 3 (§8).
+Image encoder as a second encoder, sheet row-window units. The fusion code is
+unchanged from Phase 3 (§8). Partly overtaken by what shipped: sheet row-window
+units and image *descriptions* (a vision call, text-embedded) already exist in
+`memory/extract.py`, so what remains unbuilt is specifically a second embedding
+*space* for images. Object storage is not part of it — blobs are in GridFS (§8).
 
 ---
 
@@ -684,11 +750,10 @@ code is unchanged from Phase 3 (§8).
 
 | Ceiling | Where it bites | Upgrade path |
 |---|---|---|
-| In-process cosine over a user's units | ~10k units/user (≈25 MB at 640-d). Mongo load dominates, not the dot product. | Per-worker LRU; then a Qdrant adapter behind `UnitStore.dense`. |
-| Per-worker caches duplicate across workers | Memory grows with `--workers N` | Bound the LRU. It is a cache. |
+| In-process cosine over a user's units | ~10k units/user (≈25 MB at 640-d). Mongo load dominates, not the dot product. | **The per-worker LRU is still unbuilt** — `store.dense()` re-reads every vector per query, so it is the first thing to add. Then a Qdrant adapter behind `store.dense()`'s signature. |
 | MongoDB `$text` is TF-IDF, not BM25 | Marginal ranking differences on rare terms | Only worth fixing if lexical recall measurably underperforms. |
 | Fixed `ρ` instead of dynamic `Route(q)` | Relational queries rank slightly worse | Flag already in place — needs the eval set to tune, not new code. |
-| Single encoder sidecar | Latency under load | Stateless; scale horizontally, then GPU + TEI. |
+| One in-process encoder per worker | Latency under load, and N copies of the model in memory | Scale workers (each is independent), then GPU + TEI. |
 | Background tasks are per-worker, no retry | A worker restart loses in-flight indexing | The `vec: null` backfill sweep already covers it. A real queue is the next step, if ever. |
 
 ---
@@ -703,7 +768,7 @@ multilingual requirement. In order of preference:
    identifiers — which is largely *what chart entities actually are*, and precisely
    what NER models are weakest at. Zero new dependencies.
 2. spaCy `xx_ent_wiki_sm` (multilingual) layered on top of that.
-3. A small multilingual NER model in the existing sidecar.
+3. A small multilingual NER model in-process alongside the encoder.
 
 Worth noting the paper's entity graph records *observed co-occurrence*, not inferred
 semantics — so extraction precision matters less than it first appears. Option 1 may
@@ -724,15 +789,21 @@ Nothing installed. This needs your approval first.
 
 | What | Where | Phase |
 |---|---|---|
-| `numpy` | conda-forge, `environment.yml` | 1 — vector scoring |
-| `onnxruntime` | conda-forge | 1 — encoder sidecar (CPU, no torch) |
-| Harrier-270m ONNX weights | model cache, not the repo | 1 |
-| MinIO or S3 | container | 4 — blob storage |
-| Image encoder | sidecar | 4 |
-| spaCy multilingual | conda-forge | only if §22.1 resolves that way |
+Written before anything was installed ("nothing installed, this needs your
+approval first"). Current state:
 
-`httpx`, `pymongo`, `fastapi`, `pydantic`, and `openpyxl` are already present — `httpx`
-arrives transitively via `anthropic`/`openai`, so the encoder client adds nothing.
+| What | Where | Status |
+|---|---|---|
+| `numpy` | conda-forge, `environment.yml` | **installed, in use** — vector scoring |
+| `onnxruntime` | conda-forge | **installed, in use** — encoder, in-process (CPU, no torch) |
+| Harrier-270m ONNX weights | model cache (`.cache/harrier`), not the repo | **downloaded on first use** (~348 MB) |
+| MinIO or S3 | container | **not used** — blobs are in GridFS (§8) |
+| Image encoder | — | not built (Phase 4) |
+| spaCy multilingual | conda-forge | not installed; §22.1 resolved as option 1, regex + terms |
+
+`httpx`, `pymongo`, `fastapi`, `pydantic`, and `openpyxl` are already present.
+The encoder client that `httpx` was earmarked for does not exist — the encoder
+is called in-process.
 
 ---
 
