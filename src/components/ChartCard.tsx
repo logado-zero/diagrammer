@@ -1,9 +1,9 @@
 /** Renders a render_chart tool payload as an Apache ECharts chart, theme-aware via useIsDark. */
-import { memo, useRef, useState } from 'react'
+import { memo, useCallback, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { Check, Copy, Download } from 'lucide-react'
 import type { RenderChartInput } from '../types.ts'
 import {
+  cardBackground,
   CATEGORICAL_DARK,
   CATEGORICAL_LIGHT,
   SEQUENTIAL_DARK,
@@ -12,16 +12,8 @@ import {
   STATUS_GOOD,
 } from '../lib/palette.ts'
 import { useIsDark } from '../lib/theme.ts'
-import { useDismissablePopover } from '../lib/useDismissablePopover.ts'
 import { slugify } from '../lib/slugify.ts'
-
-// Matches the card's own Tailwind surface classes (bg-white / dark:bg-stone-900),
-// used as the flat background for exported images since the on-screen option
-// itself stays transparent to sit on that surface.
-const CARD_SURFACE = { light: '#ffffff', dark: '#1c1917' }
-
-const CLIPBOARD_IMAGE_SUPPORTED =
-  typeof navigator !== 'undefined' && !!navigator.clipboard?.write && typeof ClipboardItem !== 'undefined'
+import { CardChrome, ExportActions } from './CardChrome.tsx'
 
 /**
  * Layers the app's validated palette (src/lib/palette.ts) onto the
@@ -91,105 +83,25 @@ export const ChartCard = memo(function ChartCard({ chart }: { chart: RenderChart
   const isDark = useIsDark()
   const option = buildThemedOption(chart.option, isDark)
   const chartRef = useRef<ReactECharts>(null)
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [downloadOpen, setDownloadOpen] = useState(false)
-  const downloadRef = useDismissablePopover<HTMLDivElement>(downloadOpen, () => setDownloadOpen(false))
 
-  function getDataUrl(type: 'png' | 'jpeg') {
-    const instance = chartRef.current?.getEchartsInstance()
-    if (!instance) return null
-    return instance.getDataURL({
-      type,
-      pixelRatio: 2,
-      backgroundColor: isDark ? CARD_SURFACE.dark : CARD_SURFACE.light,
-    })
-  }
-
-  async function copyImage() {
-    const url = getDataUrl('png')
-    if (!url) return
-    try {
-      const blob = await (await fetch(url)).blob()
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-      setCopyState('copied')
-    } catch {
-      setCopyState('error')
-    } finally {
-      setTimeout(() => setCopyState('idle'), 1500)
-    }
-  }
-
-  function downloadImage(type: 'png' | 'jpeg') {
-    const url = getDataUrl(type)
-    if (!url) return
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${slugify(chart.title, 'chart')}.${type === 'jpeg' ? 'jpg' : 'png'}`
-    a.click()
-    setDownloadOpen(false)
-  }
+  // The on-screen option stays transparent so it sits on the card surface;
+  // an exported image needs that surface painted in flat.
+  const getDataUrl = useCallback(
+    (type: 'png' | 'jpeg') => {
+      const instance = chartRef.current?.getEchartsInstance()
+      if (!instance) return null
+      return instance.getDataURL({ type, pixelRatio: 2, backgroundColor: cardBackground(isDark) })
+    },
+    [isDark],
+  )
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-stone-200/70 bg-white shadow-[0_1px_2px_rgba(28,25,23,0.04),0_10px_28px_-14px_rgba(28,25,23,0.18)] dark:border-stone-700 dark:bg-stone-900 dark:shadow-none">
-      <div className="flex items-center justify-between gap-2 border-b border-stone-200 px-4 py-2 text-sm font-medium text-stone-700 dark:border-stone-700 dark:text-stone-200">
-        <span className="truncate">{chart.title}</span>
-        <div className="flex shrink-0 items-center gap-0.5">
-          {CLIPBOARD_IMAGE_SUPPORTED && (
-            <button
-              type="button"
-              onClick={copyImage}
-              aria-label="Copy chart image"
-              title={copyState === 'error' ? 'Copy failed' : 'Copy chart image'}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-700"
-            >
-              {copyState === 'copied' ? (
-                <Check size={15} className="text-teal-500 dark:text-teal-400" />
-              ) : (
-                <Copy size={15} />
-              )}
-            </button>
-          )}
-          <div className="relative" ref={downloadRef}>
-            <button
-              type="button"
-              onClick={() => setDownloadOpen((open) => !open)}
-              aria-haspopup="listbox"
-              aria-expanded={downloadOpen}
-              aria-label="Download chart image"
-              title="Download chart image"
-              className="flex h-8 w-8 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-700"
-            >
-              <Download size={15} />
-            </button>
-            {downloadOpen && (
-              <ul
-                role="listbox"
-                aria-label="Download format"
-                className="absolute right-0 top-full z-20 mt-1 w-28 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40"
-              >
-                <li role="option">
-                  <button
-                    type="button"
-                    onClick={() => downloadImage('png')}
-                    className="block w-full px-3.5 py-2 text-left text-sm text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
-                  >
-                    PNG
-                  </button>
-                </li>
-                <li role="option">
-                  <button
-                    type="button"
-                    onClick={() => downloadImage('jpeg')}
-                    className="block w-full px-3.5 py-2 text-left text-sm text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
-                  >
-                    JPG
-                  </button>
-                </li>
-              </ul>
-            )}
-          </div>
-        </div>
-      </div>
+    <CardChrome
+      title={chart.title}
+      actions={
+        <ExportActions getDataUrl={getDataUrl} filenameStem={slugify(chart.title, 'chart')} noun="chart" />
+      }
+    >
       <div className="min-h-0 flex-1 p-3 sm:p-4">
         <ReactECharts
           ref={chartRef}
@@ -199,6 +111,6 @@ export const ChartCard = memo(function ChartCard({ chart }: { chart: RenderChart
           style={{ height: '100%', width: '100%' }}
         />
       </div>
-    </div>
+    </CardChrome>
   )
 })

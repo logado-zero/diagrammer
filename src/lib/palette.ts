@@ -44,3 +44,23 @@ export function categoricalColor(index: number, isDark: boolean): string {
   const palette = isDark ? CATEGORICAL_DARK : CATEGORICAL_LIGHT
   return palette[index % palette.length]
 }
+
+/**
+ * The card's own Tailwind surface classes (bg-white / dark:bg-stone-900) as
+ * hex, for the places CSS can't reach: the flat background baked into an
+ * exported PNG/JPG (an SVG has no background of its own, and JPEG has no
+ * alpha), and Mermaid's "process" node fill, so process nodes blend into the
+ * card and only their border stands out.
+ *
+ * Both cards had their own copy of this, in two different shapes, mirroring
+ * one set of Tailwind classes.
+ */
+export const CARD_SURFACE = {
+  light: { fill: '#ffffff', border: '#d4d4d4', ink: '#292524' },
+  dark: { fill: '#1c1917', border: '#57534e', ink: '#f5f5f4' },
+} as const
+
+/** Input: whether dark mode is on. Output: that theme's card background hex. */
+export function cardBackground(isDark: boolean): string {
+  return isDark ? CARD_SURFACE.dark.fill : CARD_SURFACE.light.fill
+}

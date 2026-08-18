@@ -1,20 +1,11 @@
 /** Renders a render_diagram tool payload as a Mermaid flowchart, theme-aware via useIsDark. */
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import mermaid from 'mermaid'
-import { Check, Copy, Download } from 'lucide-react'
 import type { RenderDiagramInput } from '../types.ts'
-import { CATEGORICAL_DARK, CATEGORICAL_LIGHT } from '../lib/palette.ts'
+import { cardBackground, CARD_SURFACE, CATEGORICAL_DARK, CATEGORICAL_LIGHT } from '../lib/palette.ts'
 import { useIsDark } from '../lib/theme.ts'
-import { useDismissablePopover } from '../lib/useDismissablePopover.ts'
 import { slugify } from '../lib/slugify.ts'
-
-// Matches the card's own Tailwind surface classes (bg-white / dark:bg-stone-900) — used both as
-// the flat background for exported images and as the "process" node fill, so process nodes blend
-// into the card and only their border stands out (mirrors the old FlowNode.tsx shape intent).
-const CARD_SURFACE = {
-  light: { fill: '#ffffff', border: '#d4d4d4', ink: '#292524' },
-  dark: { fill: '#1c1917', border: '#57534e', ink: '#f5f5f4' },
-}
+import { CardChrome, ExportActions } from './CardChrome.tsx'
 
 /**
  * Excalidraw-style palette (Open Color values, the palette Excalidraw
@@ -212,9 +203,6 @@ function svgToDataUrl(svg: SVGSVGElement, type: 'png' | 'jpeg', backgroundColor:
   })
 }
 
-const CLIPBOARD_IMAGE_SUPPORTED =
-  typeof navigator !== 'undefined' && !!navigator.clipboard?.write && typeof ClipboardItem !== 'undefined'
-
 /**
  * Input: diagram (RenderDiagramInput — {title, mermaid}, mermaid source
  * already built server-side by the flowchart subagent). Output: a themed
@@ -229,9 +217,6 @@ export const DiagramCard = memo(function DiagramCard({ diagram }: { diagram: Ren
   const containerRef = useRef<HTMLDivElement>(null)
   const [svg, setSvg] = useState<string | null>(null)
   const [renderError, setRenderError] = useState<string | null>(null)
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [downloadOpen, setDownloadOpen] = useState(false)
-  const downloadRef = useDismissablePopover<HTMLDivElement>(downloadOpen, () => setDownloadOpen(false))
 
   // Hand-drawn look starts as whatever the flowchart subagent decided for this diagram, but is
   // then fully client-controlled — a new diagram (later turn) resets it to that turn's own
@@ -295,41 +280,22 @@ export const DiagramCard = memo(function DiagramCard({ diagram }: { diagram: Ren
     }
   }, [diagram.mermaid, diagram.colors, isDark, handDrawn])
 
-  function getBackground() {
-    return isDark ? CARD_SURFACE.dark.fill : CARD_SURFACE.light.fill
-  }
-
-  async function copyImage() {
-    const svgEl = containerRef.current?.querySelector('svg')
-    if (!svgEl) return
-    try {
-      const url = await svgToDataUrl(svgEl, 'png', getBackground())
-      const blob = await (await fetch(url)).blob()
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-      setCopyState('copied')
-    } catch {
-      setCopyState('error')
-    } finally {
-      setTimeout(() => setCopyState('idle'), 1500)
-    }
-  }
-
-  async function downloadImage(type: 'png' | 'jpeg') {
-    const svgEl = containerRef.current?.querySelector('svg')
-    if (!svgEl) return
-    const url = await svgToDataUrl(svgEl, type, getBackground())
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${slugify(diagram.title, 'diagram')}.${type === 'jpeg' ? 'jpg' : 'png'}`
-    a.click()
-    setDownloadOpen(false)
-  }
+  // Unlike ECharts, Mermaid gives us a live <svg> rather than a raster, so
+  // this is the half that genuinely differs from ChartCard.
+  const getDataUrl = useCallback(
+    (type: 'png' | 'jpeg') => {
+      const svgEl = containerRef.current?.querySelector('svg')
+      if (!svgEl) return null
+      return svgToDataUrl(svgEl, type, cardBackground(isDark))
+    },
+    [isDark],
+  )
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-stone-200/70 bg-white shadow-[0_1px_2px_rgba(28,25,23,0.04),0_10px_28px_-14px_rgba(28,25,23,0.18)] dark:border-stone-700 dark:bg-stone-900 dark:shadow-none">
-      <div className="flex items-center justify-between gap-2 border-b border-stone-200 px-4 py-2.5 text-sm font-medium text-stone-700 dark:border-stone-700 dark:text-stone-200">
-        <span className="truncate">{diagram.title}</span>
-        {svg && (
+    <CardChrome
+      title={diagram.title}
+      actions={
+        svg && (
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
@@ -356,64 +322,15 @@ export const DiagramCard = memo(function DiagramCard({ diagram }: { diagram: Ren
                 />
               </span>
             </button>
-            {CLIPBOARD_IMAGE_SUPPORTED && (
-              <button
-                type="button"
-                onClick={copyImage}
-                aria-label="Copy diagram image"
-                title={copyState === 'error' ? 'Copy failed' : 'Copy diagram image'}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-700"
-              >
-                {copyState === 'copied' ? (
-                  <Check size={15} className="text-teal-500 dark:text-teal-400" />
-                ) : (
-                  <Copy size={15} />
-                )}
-              </button>
-            )}
-            <div className="relative" ref={downloadRef}>
-              <button
-                type="button"
-                onClick={() => setDownloadOpen((open) => !open)}
-                aria-haspopup="listbox"
-                aria-expanded={downloadOpen}
-                aria-label="Download diagram image"
-                title="Download diagram image"
-                className="flex h-8 w-8 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-700"
-              >
-                <Download size={15} />
-              </button>
-              {downloadOpen && (
-                <ul
-                  role="listbox"
-                  aria-label="Download format"
-                  className="absolute right-0 top-full z-20 mt-1 w-28 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40"
-                >
-                  <li role="option">
-                    <button
-                      type="button"
-                      onClick={() => void downloadImage('png')}
-                      className="block w-full px-3.5 py-2 text-left text-sm text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
-                    >
-                      PNG
-                    </button>
-                  </li>
-                  <li role="option">
-                    <button
-                      type="button"
-                      onClick={() => void downloadImage('jpeg')}
-                      className="block w-full px-3.5 py-2 text-left text-sm text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
-                    >
-                      JPG
-                    </button>
-                  </li>
-                </ul>
-              )}
-            </div>
+            <ExportActions
+              getDataUrl={getDataUrl}
+              filenameStem={slugify(diagram.title, 'diagram')}
+              noun="diagram"
+            />
           </div>
-        )}
-      </div>
-
+        )
+      }
+    >
       <div className="min-h-0 w-full flex-1 overflow-auto p-4">
         {renderError ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-stone-500 dark:text-stone-400">
@@ -437,6 +354,6 @@ export const DiagramCard = memo(function DiagramCard({ diagram }: { diagram: Ren
           />
         )}
       </div>
-    </div>
+    </CardChrome>
   )
 })
