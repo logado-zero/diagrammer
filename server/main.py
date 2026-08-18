@@ -423,8 +423,15 @@ async def chat(body: ChatRequestBody, user: dict[str, Any] = Depends(current_use
         return JSONResponse(status_code=400, content={"error": "messages is required."})
 
     option = find_model_option(body.model)
-    if option.provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
-        return JSONResponse(status_code=500, content={"error": "OPENAI_API_KEY is not configured on the server."})
+    # The same gate GET /api/models reports as `available`, applied here too.
+    # Greying an option out in the picker is presentation, not enforcement —
+    # without this a client could POST any catalog id and be served it.
+    if not is_model_available(option):
+        if option.provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
+            return JSONResponse(
+                status_code=500, content={"error": "OPENAI_API_KEY is not configured on the server."}
+            )
+        return JSONResponse(status_code=400, content={"error": f"{option.label} is not available."})
 
     async def event_stream():
         # Buffers the assistant turn as it streams so it can be stored as one

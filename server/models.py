@@ -86,10 +86,17 @@ def is_model_available(option: ModelOption) -> bool:
     """
     Whether a catalog entry can actually be used right now.
     Input: a ModelOption. Output: True/False.
-    Claude always resolves to a transport (api or agent-sdk — see agent.py),
-    so it never needs a key to be "available"; OpenAI needs OPENAI_API_KEY.
+
+    Read by GET /api/models (to grey the picker) *and* by POST /api/chat (to
+    refuse the turn) — one gate, both places, so the picker is presentation
+    and this is enforcement.
+
+    Normally: Claude always resolves to a transport (api or agent-sdk — see
+    agent.py), so it never needs a key; OpenAI needs OPENAI_API_KEY.
     """
-    # Only Luna is selectable right now; drop this line to re-enable the rest.
+    # TEMPORARY: the picker is pinned to GPT-5.6 Luna at the user's request.
+    # Delete these two lines to restore the full catalog — nothing else needs
+    # to change, and the Claude transports are still wired and working.
     if option.id != "gpt-5.6-luna":
         return False
     if option.provider == "openai":
