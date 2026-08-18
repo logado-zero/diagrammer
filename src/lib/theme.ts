@@ -32,7 +32,7 @@ function resolved(): boolean {
 function apply() {
   const dark = resolved()
   document.documentElement.classList.toggle('dark', dark)
-  // Keeps native UI — scrollbars, the Composer's <select> popup, form controls
+  // Keeps native UI — scrollbars and form controls
   // — from rendering in the opposite theme.
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
   for (const listener of listeners) listener()

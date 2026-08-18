@@ -33,7 +33,8 @@ Three phases of DISCUSS_RAG.md's design are built:
   set to tune them against.
 
 The public surface is five functions, and other modules import nothing else
-from here — the same discipline `agent.py` follows with `run_agent()`:
+from here, with two deliberate exceptions noted below — the same discipline
+`agent.py` follows with `run_agent()`:
 
     index_turn()          write one finished turn into memory (call and forget)
     search()              three-view retrieval over one owner's units
@@ -44,6 +45,14 @@ from here — the same discipline `agent.py` follows with `run_agent()`:
 Everything is scoped by `Scope`, which cannot be constructed without an owner
 id. See types.py for why that is a type-level rule rather than a convention —
 and graph.py for why the graph view makes it matter more, not less.
+
+The two exceptions to "nothing else is imported from here": `memory_enabled()`
+and the `Scope` type itself, which the chat route and agent.py both need in
+order to decide whether to build a scope at all. Both are re-exported below.
+Two modules also reach past this file on purpose — routes/chat.py imports
+`store` for its GridFS blob helper, and main.py imports `encoder.encode` for
+the startup warm-up. Neither is retrieval; both would be silly to funnel
+through a facade.
 
 Module map:
 

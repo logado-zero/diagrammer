@@ -26,13 +26,18 @@ closes it is indexed into memory for later retrieval.
 **If you read nothing else, read these seven files in this order.** Each one is
 the caller of the next, so you can follow a single request all the way down:
 
-1. **`src/App.tsx`** — the only stateful component. Signed-in user, saved
-   conversation list, chat messages, selected model, pending attachment.
+1. **`src/App.tsx` + `src/hooks/`** — the client's state. `App.tsx` wires four
+   hooks together and picks a screen; `useAuth` (session), `useConversations`
+   (saved history), `useChatTurn` (the live turn, and the reducer that folds
+   each `ServerEvent` into a message), `useComposer` (unsent draft +
+   attachment).
 2. **`src/lib/api.ts`** — the only place that talks to the network.
    `streamChat()` POSTs and hand-parses the SSE stream line by line.
-3. **`server/main.py`** — the entire HTTP surface, all `async def`. `/api/chat`
-   loops over `run_agent(...)`, re-emits what it yields as SSE, persists the
-   turn around it, and schedules memory ingest. No LLM logic itself.
+3. **`server/routes/chat.py`** — `POST /api/chat`, all `async def`. Loops over
+   `run_agent(...)`, re-emits what it yields as SSE, persists the turn around
+   it, and schedules memory ingest. No LLM logic itself. (`server/main.py` is
+   app construction only; the other routes are its siblings in
+   `server/routes/`.)
 4. **`server/agent.py`** — `run_agent()` trims history to the last 3 messages,
    inlines attachments, looks up the model, forwards the memory `Scope`, hands
    off to one of `server/providers/`, and intercepts `diagram`/`chart` events on
@@ -42,7 +47,8 @@ the caller of the next, so you can follow a single request all the way down:
    Each answers `search_memory` in its own tool loop.
 6. **`server/subagents.py`** — the quality pass, called only from `agent.py`.
 7. **`server/memory/`** — read `__init__.py` first; it names the five public
-   functions and maps the other twelve files.
+   functions (plus `memory_enabled()` and the `Scope` type, which the chat
+   route and `agent.py` import directly) and maps the other twelve files.
 
 **To run it** (see `CLAUDE.md` for why every command goes through conda):
 
@@ -81,8 +87,8 @@ constantly and most of them are not standard terms.
 | Term | What it means here |
 |---|---|
 | **Provider** / **transport** | One of the three interchangeable backends in `server/providers/`. They all yield the same events, so nothing above them knows which ran. |
-| **`AgentEvent`** | The one dict shape that crosses every boundary: `text`, `diagram`, `chart`, `trace`, `retrieval`, `error`, `done`. Produced by a provider, relayed by `main.py`, consumed by `App.tsx`. |
-| **Choke point** | A single function every path must pass through, where cross-cutting work lives instead of being repeated. `run_agent()` is the one for generation, `main.py` for persistence. |
+| **`AgentEvent`** | The one dict shape that crosses every boundary: `text`, `diagram`, `chart`, `trace`, `retrieval`, `error`, `done`. Produced by a provider, relayed by `routes/chat.py`, consumed by `useChatTurn`. |
+| **Choke point** | A single function every path must pass through, where cross-cutting work lives instead of being repeated. `run_agent()` is the one for generation, `routes/chat.py` for persistence. |
 | **Subagent** | A second, narrower LLM call that polishes a tool payload before it's rendered (`server/subagents.py`). The user never sees it directly. |
 | **Draw mode** | The composer's Auto / Flowchart / Data Chart selector. It changes *which tools the model is offered*, nothing else. |
 | **Memory unit** | One indexed piece of a past turn — a message, a chart payload, a window of spreadsheet rows, an image description. Rows in `memory_units`. |
@@ -105,13 +111,13 @@ flowchart LR
         Auth["AuthScreen<br/>sign in / sign up / guest"]
         Side["Sidebar<br/>saved conversations"]
         UI["WelcomeScreen / ChatView / Composer"]
-        App["App.tsx<br/>owns all chat state"]
+        App["App.tsx + src/hooks/<br/>all client state"]
         Api["lib/api.ts<br/>streamChat / fetchModels<br/>auth + conversation calls"]
         Canvas["CanvasPanel<br/>latest diagram/chart, full size"]
     end
 
     subgraph Server["Backend (server/*.py) — FastAPI"]
-        Main["main.py<br/>routes · persists each turn<br/>· schedules memory ingest"]
+        Main["routes/chat.py<br/>relays SSE · persists each turn<br/>· schedules memory ingest"]
         AuthPy["auth.py<br/>scrypt passwords,<br/>session cookie to user"]
         Db["db.py<br/>users / sessions / conversations<br/>memory_units / GridFS"]
         Agent["agent.py<br/>run_agent(): retrieves context, inlines<br/>attachments, picks a provider, routes<br/>diagram/chart through the subagents"]
@@ -168,7 +174,7 @@ sequenceDiagram
     participant U as User
     participant C as Composer/App.tsx
     participant A as lib/api.ts
-    participant S as server/main.py
+    participant S as server/routes/chat.py
     participant M as MongoDB
     participant G as agent.py -> provider
     participant L as Claude/OpenAI
@@ -218,7 +224,7 @@ sequenceDiagram
 
 ## The same turn, as backend steps
 
-1. `POST /api/chat` (`server/main.py`) validates the model/key, then
+1. `POST /api/chat` (`server/routes/chat.py`) validates the model/key, then
    `event_stream()` calls `_begin_turn()` — creates or loads the conversation
    and writes the user's message.
 2. `event_stream()` loops `async for event in run_agent(...)`. `run_agent()`
@@ -230,7 +236,7 @@ sequenceDiagram
    `server/providers/{api,agent_sdk,openai_provider}.py`, each streaming the
    same `AgentEvent` shape.
 3. Still inside `run_agent()`: a `diagram` or `chart` event is intercepted
-   before it reaches `main.py` and run through a second, specialized subagent
+   before it reaches the chat route and run through a second, specialized subagent
    call (`server/subagents.py`) that polishes the payload — bracketed by
    synthesized `trace` events ("Active agent: …", "Calling render_… tool…",
    "Result ready") so the client sees live progress. Every other event type
@@ -253,7 +259,7 @@ flowchart TD
     Oai["providers/openai_provider.py<br/>OpenAI model picked"]
     Ev{"AgentEvent type?"}
     Sub["subagents.py<br/>polish diagram/chart payload,<br/>emit trace events around it"]
-    Emit["event_stream() — main.py<br/>re-emit as SSE + accumulate reply"]
+    Emit["event_stream() — routes/chat.py<br/>re-emit as SSE + accumulate reply"]
     Client(["browser<br/>renders each event live"])
     Loop{"more events<br/>from the provider?"}
     Persist["persist assistant message<br/>+ insert agent_logs turn"]
@@ -269,7 +275,8 @@ flowchart TD
     Oai --> Ev
     Ev -->|diagram / chart| Sub --> Emit
     Ev -->|text / trace / error / done| Emit
-    Emit -.->|data: event| Client
+    Ev -->|retrieval| Emit
+    Emit -.->|data: event — every type except retrieval| Client
     Emit --> Loop
     Loop -->|yes| Ev
     Loop -->|no — done| Persist
@@ -396,7 +403,7 @@ are the closest available substitute.
 ## Draw-mode selector: Auto / Flowchart / Data Chart
 
 The composer's mode popover restricts *which tool the primary model is offered*,
-not a forced tool call. `ChatRequestBody.mode` flows from `main.py` through
+not a forced tool call. `ChatRequestBody.mode` flows from the chat route through
 `agent.py` into whichever provider ran, and each asks
 `tools_for_mode(mode, memory=...)` for its tool list: `"auto"` gets both drawing
 tools, `"diagram"`/`"chart"` get one. A hard `tool_choice` force was deliberately
@@ -447,7 +454,7 @@ localStorage['diagrammer:theme']  →  'light' | 'dark' | 'system'
   ECharts and Mermaid for the axis/grid/edge chrome those libraries own. Adding
   the picker changed which value the hook returns, not what anything does with
   it. `colorScheme` on `<html>` covers the last surface neither library nor
-  Tailwind reaches: native scrollbars and the Composer's `<select>` popup.
+  Tailwind reaches: native scrollbars and native form controls.
 
 ### The surface ladder
 
@@ -560,7 +567,7 @@ retrieval internals.
 the list collapses itself, with a manual click still winning from then on. It
 used to render only while `isStreaming && !text` and disappear the instant the
 reply began; keeping it costs one collapsed row and answers "did this turn
-search anything?" after the fact. `main.py` persists `reply["trace"]`, so the
+search anything?" after the fact. The chat route persists `reply["trace"]`, so the
 labels survive a reload too.
 
 ## The memory layer
@@ -657,7 +664,7 @@ is stable for the turn.
 
 ```mermaid
 flowchart TB
-    DONE["'done' event in main.py's event_stream()"]
+    DONE["'done' event in routes/chat.py's event_stream()"]
     PUSH["store the assistant turn (existing)"]
     CLOSE["SSE stream closes — user has their answer"]
 
@@ -787,7 +794,7 @@ truncated history the tool exists to compensate for. How many come back is
 **What came back is logged, not displayed.** `retrieval_record()` builds one
 entry per search — the query, a status, and a `list_result` array with each hit's
 rank, conversation, ids, `seq`/`role`/`kind`, score, `viewScores` and a capped
-text preview. Each provider yields it as a `retrieval` event and `main.py` files
+text preview. Each provider yields it as a `retrieval` event and the chat route files
 it into `agent_logs.steps`, then `continue`s **before** the SSE yield: it is the
 one provider event the browser never sees. The chat UI gets the
 `Searching memory…` status line and nothing else.
@@ -826,7 +833,7 @@ content back into the loop and needs per-request identity. Two consequences:
 **The scope is the entire security boundary.** `search_memory`'s schema has one
 field. There is no owner or conversation parameter, so the model cannot widen
 what it sees and a prompt injection inside a retrieved document has nothing to
-aim at. The `Scope` comes from the session cookie via `main.py`'s
+aim at. The `Scope` comes from the session cookie via `routes/chat.py`'s
 `_memory_scope()`, which returns `None` when `MEMORY_ENABLED=0` — and `None`
 removes the tool and its prompt text entirely, leaving a request byte-identical
 to what the app sent before any of this existed.
@@ -880,7 +887,7 @@ A warm search is ~145ms — one query encode plus the scan — and unlike ingest
 only when the model chose to search. The **cold** number is the one that bites:
 the encoder loads lazily and that first load is ~4s, which would land on the
 first turn after every boot and `--reload`, reliably enough to trip
-`context.TIMEOUT_SECONDS` and answer that turn with no memory at all. `main.py`
+`context.TIMEOUT_SECONDS` and answer that turn with no memory at all. `main.py`'s `lifespan`
 schedules a warm-up at startup so nobody's first question pays for it.
 
 Edges are pairwise, so their write cost is quadratic in entities per unit. Hence
@@ -952,7 +959,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet
 A message's `attachment` is `{ blobId, mediaType, kind: "image" | "file",
 name? }` — a reference into the same GridFS `attachments` bucket the memory layer
 uses (`server/memory/store.py`'s `save_blob()`/`load_blob()`), not the bytes
-themselves. `main.py`'s `_stored_user_message()` uploads the blob when a turn's
+themselves. `routes/chat.py`'s `_stored_user_message()` uploads the blob when a turn's
 last message carries an image/file, and `GET /api/conversations/{id}` turns the
 reference into a fetchable `GET /api/attachments/{blobId}` URL (owner-checked
 against the blob's own metadata) — so a reopened conversation shows what was
@@ -976,7 +983,7 @@ generated `guest-xxxxxxxx` id and an empty `passwordHash` that
 `verify_password()` can never match — every route works unchanged, and the
 trade-off is that the account can't be signed back into once the cookie is gone.
 
-**Saving happens inside `POST /api/chat`**, in `main.py`'s `event_stream()`. The
+**Saving happens inside `POST /api/chat`**, in `routes/chat.py`'s `event_stream()`. The
 user's message is written on entry; the assistant's reply is buffered as events
 stream past and written once on `done`. An errored turn writes no reply, which is
 exactly what a retry expects to find. The subtle part is `_begin_turn()`, which
@@ -1025,7 +1032,7 @@ end; they'll make more sense with the flow in mind.
 **One choke point per cross-cutting concern.** `agent.py`'s `run_agent()` is the
 single place every provider's output passes through, so attachment inlining, the
 subagent pass, and `trace` events live there rather than three times over. The
-same instinct puts persistence and memory ingest in `main.py` (route concerns,
+same instinct puts persistence and memory ingest in `routes/chat.py` (route concerns,
 not generation concerns) and the tool list in `tools.py`. When a feature needs
 *different* handling per provider — web search's tool definitions — that's the
 signal it doesn't belong in a choke point.
@@ -1064,7 +1071,7 @@ need a download first). Both use the double-checked pattern — check, take an
 **Work that must outlive the response goes in a background task, with a strong
 reference.** Memory indexing embeds several units and may call a vision model;
 none of that belongs in front of a response the user is already reading, so
-`main.py`'s `_spawn_memory_ingest` schedules it and returns. The non-obvious
+`routes/chat.py`'s `_spawn_memory_ingest` schedules it and returns (via `shared.spawn`). The non-obvious
 part: **asyncio holds only a weak reference to a running task**, so a
 fire-and-forget `create_task()` whose result nobody keeps can be garbage
 collected mid-flight. `_ingest_tasks` is a module-level `set` each task discards
@@ -1094,7 +1101,7 @@ whose absence changes nothing but latency.
   is a pure props-in view.
 - **One shape crosses every boundary.** The `AgentEvent`/`ServerEvent` dict
   (`text` | `diagram` | `chart` | `trace` | `retrieval` | `error` | `done`, plus
-  `conversation` | `title` from `main.py`) is produced by a provider, forwarded
+  `conversation` | `title` from `routes/chat.py`) is produced by a provider, forwarded
   verbatim, and consumed verbatim by `App.tsx`'s reducer. Grep for that shape and
   you've found every place a chat event is created or handled.
 - **Almost no hidden state.** No router, no global store. The database holds
@@ -1114,13 +1121,22 @@ whose absence changes nothing but latency.
 |---|---|
 | `index.html` | Shell — plus the pre-paint script that applies the saved theme before React mounts |
 | `src/index.css` | The whole stylesheet: `@import "tailwindcss"` + the `@custom-variant dark` line |
-| `src/App.tsx` | Owns user, conversation list, chat state, pending attachment, model selection, retry |
+| `src/main.tsx` | Mounts `<App />` into `#root` |
+| `src/App.tsx` | Wires the four state hooks together and picks a screen (AuthScreen / WelcomeScreen / ChatView) |
+| `src/hooks/useAuth.ts` | The session: `user`, `authChecked`, sign-out |
+| `src/hooks/useConversations.ts` | Saved history: the sidebar list, which conversation is open, its title |
+| `src/hooks/useChatTurn.ts` | The live turn: `messages`, `isStreaming`, `runTurn`/`retry`, and `applyEvent` (the `ServerEvent` → `ChatMessage` reducer) |
+| `src/hooks/useComposer.ts` | Unsent draft + pending attachment, cleared together |
+| `src/hooks/usePersistedState.ts` | `useState` that writes through to localStorage (model, draw mode, sidebar) |
+| `src/hooks/useImageExport.ts` | Copy-image / download-as-PNG-or-JPG for either canvas card |
+| `src/lib/storage.ts` | `STORAGE_KEYS` — every localStorage key the app writes |
 | `src/types.ts` | Shared client types: `ChatMessage`, `ServerEvent`, `RenderDiagramInput`/`RenderChartInput`, `ConversationSummary`, `DrawMode` |
-| `src/lib/api.ts` | `streamChat()` (SSE client), `fetchModels()`, `withVisualContext()`, auth/conversation calls |
+| `src/lib/api.ts` | `streamChat()` (SSE client), `fetchModels()`, `withVisualContext()`, `mediaTypeFor()`/`readFileAsBase64()`, auth/conversation calls |
 | `src/components/AuthScreen.tsx` | Sign in / sign up / continue as guest |
 | `src/components/WelcomeScreen.tsx` | Pre-first-message landing: brand mark, headline, composer, prompt pills |
 | `src/components/Sidebar.tsx` | Saved-conversation list, New chat, delete (`<dialog>` confirm), theme picker, sign out |
 | `src/components/ChatHeader.tsx` | Sticky conversation-title bar |
+| `src/components/CardChrome.tsx` | The shell both canvas cards share, plus `ExportActions` (copy / download menu) |
 | `src/components/Composer.tsx` | Textarea + attach + draw-mode + model pickers + send |
 | `src/components/ChatView.tsx` | `findLatestVisual`; single-column vs split-pane |
 | `src/components/MessageBubble.tsx` | One message; user bubble, or assistant reply with copy/retry/read-aloud |
@@ -1136,7 +1152,13 @@ whose absence changes nothing but latency.
 | `src/lib/useDismissablePopover.ts` | Outside-click + Escape ref, shared by the composer and card popovers |
 | `src/lib/demoData.ts` | `DEMO_MESSAGES` — what `?demo=1` renders instead of signing in |
 | `src/lib/slugify.ts` | Download filename stem; strips diacritics via NFD |
-| `server/main.py` | FastAPI routes; persists each turn + `agent_logs` + attachment blobs; `GET .../logs`, `GET /api/attachments/{id}`; schedules memory ingest; delete cascade |
+| `server/main.py` | App construction only: CORS, body-size guard, the app-wide `PyMongoError` handler, `lifespan` startup, `include_router()` |
+| `server/routes/meta.py` | `GET /api/health`, `GET /api/models` |
+| `server/routes/conversations.py` | `GET /api/conversations`, `GET`/`DELETE /api/conversations/{id}`, `GET .../logs`, `public_conversation()`, the delete cascade |
+| `server/routes/attachments.py` | `GET /api/attachments/{id}` |
+| `server/routes/chat.py` | `POST /api/chat`: the SSE relay, turn persistence, titling, `agent_logs`, memory-ingest scheduling |
+| `server/shared.py` | `now()` (naive UTC), `owner_filter()` (the tenancy term), `object_id()`, `owned_conversation()`, `spawn()` |
+| `server/mermaid.py` | The Mermaid rules two modules must agree on: `end` → `endNode`, `safe_id()`, `sanitize_text()` |
 | `server/auth.py` | scrypt hashing, `current_user()`, `/api/auth/*` |
 | `server/db.py` | `users`/`sessions`/`conversations`/`memory_units`/`agent_logs` handles, GridFS bucket, `ensure_indexes()` |
 | `server/agent.py` | `run_agent()` — the cross-provider choke point; `_node_colors()`, `_clean_title()` |
@@ -1146,10 +1168,11 @@ whose absence changes nothing but latency.
 | `server/types.py` | The pydantic request bodies — the only shapes validated at runtime |
 | `server/tools.py` | Tool JSON Schemas (incl. `search_memory`), the prompt parts, `system_prompt()`, `tools_for_mode()`. Import-free on purpose |
 | `server/providers/types.py` | The `AgentEvent` dict shape all three providers yield |
+| `server/providers/dispatch.py` | Tool name → client event + model-facing result, and the trace labels. Shared by `api.py` and `openai_provider.py`; `agent_sdk.py` takes the constants only |
 | `server/providers/api.py` | Claude via `AsyncAnthropic` (metered, images, server tools) |
 | `server/providers/agent_sdk.py` | Claude via local `claude` CLI (dev-only, no images) |
 | `server/providers/openai_provider.py` | OpenAI via `AsyncOpenAI` on the **Responses** API |
-| `server/memory/__init__.py` | Public surface: `index_turn()`, `search()`, `select_context()`, `search_memory()`, `forget_conversation()` |
+| `server/memory/__init__.py` | Public surface: `index_turn()`, `search()`, `select_context()`, `search_memory()`, `forget_conversation()`, plus `memory_enabled()` and the `Scope` type, which the chat route and `agent.py` both import |
 | `server/memory/types.py` | `Scope` (the tenant boundary), `MemoryUnit`, `SearchHit` |
 | `server/memory/encoder.py` | Harrier-270m ONNX, off the event loop via `to_thread` + semaphore |
 | `server/memory/extract.py` | One turn → units; image description via `gpt-5.6-luna` |
@@ -1162,6 +1185,30 @@ whose absence changes nothing but latency.
 | `server/memory/tool.py` | The pull path; renders hits for a model to cite (`format_hits`) and for `agent_logs` (`retrieval_record`); `MEMORY_SEARCH_LIMIT` |
 | `server/memory/backfill.py` | `python -m server.memory.backfill` — entities, edges, and the `vec: null` sweep |
 | `server/memory/demo.py` | `python -m server.memory.demo`, incl. the tenant-isolation gate |
+
+### The HTTP surface, in one place
+
+| Method + path | Module | Auth |
+|---|---|---|
+| `GET /api/health` | `routes/meta.py` | no |
+| `GET /api/models` | `routes/meta.py` | no |
+| `POST /api/auth/register` | `auth.py` | no |
+| `POST /api/auth/login` | `auth.py` | no |
+| `POST /api/auth/guest` | `auth.py` | no |
+| `POST /api/auth/logout` | `auth.py` | cookie |
+| `GET /api/auth/me` | `auth.py` | cookie |
+| `GET /api/conversations` | `routes/conversations.py` | cookie |
+| `GET /api/conversations/{id}` | `routes/conversations.py` | cookie |
+| `DELETE /api/conversations/{id}` | `routes/conversations.py` | cookie |
+| `GET /api/conversations/{id}/logs` | `routes/conversations.py` | cookie |
+| `GET /api/attachments/{blobId}` | `routes/attachments.py` | cookie |
+| `POST /api/chat` | `routes/chat.py` | cookie |
+
+Every cookie route takes `current_user` as a FastAPI dependency and reaches
+the database through `shared.owner_filter()` / `shared.owned_conversation()`,
+so another user's id is a 404 rather than a read of their data. The one
+exception is `GET /api/attachments/{blobId}`, where ownership lives in GridFS
+file metadata rather than a query term and is checked after the open.
 
 See `CLAUDE.md` for the provider-switch rationale and dev-environment
 constraints, `PROGRESS.md` for build history and gotchas, and `DISCUSS_RAG.md`
@@ -1177,9 +1224,11 @@ with its own stylesheet, section rail, spec cards and figure frames, and its
 source is `docs/howtheywork.artifact.html`. Publishing `HOWTHEYWORK.md` over that
 URL would replace the design with plain markdown.
 
-**The repo copy is currently ahead of the live page** (as of 2026-08-17,
-milestone 30: the Theming section, the delete-confirm note and the completed file
-map are in `docs/howtheywork.artifact.html` but have not been republished).
+**The repo copy is currently ahead of the live page** (as of 2026-08-18,
+milestone 32). Unpublished in `docs/howtheywork.artifact.html`: the Theming
+section and surface ladder, the delete-confirm note, the completed file map,
+the push-path lead paragraph, and the milestone-32 refactor (`server/routes/`,
+`src/hooks/`, `providers/dispatch.py`).
 
 To update it: edit `docs/howtheywork.artifact.html`, then republish that file to
 the URL above. The repo copy exists because the first two updates had to
