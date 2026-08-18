@@ -4,6 +4,7 @@
  * SSE response line by line.
  */
 import type {
+  AttachmentKind,
   ChatMessage,
   ConversationSummary,
   DrawMode,
@@ -20,23 +21,59 @@ export interface OutgoingMessage {
   file?: { name: string; mediaType: string; data: string } | null
 }
 
+// Mirrors server/attachments.py's XLSX_MEDIA_TYPE — the one mediaType
+// inline_file_attachment() parses with openpyxl; everything else (including
+// .csv) decodes as plain text.
+const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+/** Input: the picked file + attach kind. Output: the mediaType to send — a "sheet" attachment is .xlsx (parsed server-side) or .csv (already plain text). */
+export function mediaTypeFor(file: File, kind: AttachmentKind): string {
+  if (kind === 'image') return file.type || 'image/png'
+  if (kind === 'text') return 'text/plain'
+  return file.name.toLowerCase().endsWith('.csv') ? 'text/csv' : XLSX_MEDIA_TYPE
+}
+
+/**
+ * Reads a picked file into a base64 string, for sending over JSON (no
+ * multipart upload in this app).
+ * Input: a File from the file picker. Output: Promise<base64 string>.
+ */
+export function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      resolve(result.split(',')[1] ?? '')
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
 export interface ModelsResponse {
   defaultModelId: string
   models: ModelOption[]
 }
 
 /** Input: none. Output: the model catalog + default id from GET /api/models, fetched once on app start (see App.tsx). */
-export async function fetchModels(): Promise<ModelsResponse> {
-  const response = await fetch('/api/models')
-  if (!response.ok) throw new Error(`Failed to load models (${response.status}).`)
-  return response.json() as Promise<ModelsResponse>
+export function fetchModels(): Promise<ModelsResponse> {
+  return request<ModelsResponse>('/api/models')
+}
+
+/**
+ * Pulls a human-readable message out of a failed response's body.
+ * FastAPI reports errors as `{detail}` (HTTPException) but the chat route
+ * uses `{error}`, so both are unwrapped — in one place, since request() and
+ * streamChat() below each used to do it with the same comment restated.
+ */
+async function errorMessage(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { detail?: string; error?: string } | null
+  return body?.detail ?? body?.error ?? `Request failed (${response.status}).`
 }
 
 /**
  * One fetch wrapper for every authenticated JSON route.
- * `credentials: 'include'` sends the session cookie; FastAPI reports errors
- * as `{detail}` (HTTPException) but the chat route uses `{error}`, so both
- * are unwrapped here rather than at each call site.
+ * `credentials: 'include'` sends the session cookie.
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -44,10 +81,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     ...init,
   })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string; error?: string } | null
-    throw new Error(body?.detail ?? body?.error ?? `Request failed (${response.status}).`)
-  }
+  if (!response.ok) throw new Error(await errorMessage(response))
   return response.json() as Promise<T>
 }
 
@@ -157,10 +191,7 @@ export async function streamChat(
   })
 
   if (!response.ok || !response.body) {
-    // `error` is this route's own shape; `detail` is what FastAPI's
-    // HTTPException produces, e.g. the 401 from the current_user dependency.
-    const body = await response.json().catch(() => null)
-    onEvent({ type: 'error', message: body?.error ?? body?.detail ?? `Request failed (${response.status}).` })
+    onEvent({ type: 'error', message: await errorMessage(response) })
     return
   }
 

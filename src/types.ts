@@ -43,6 +43,19 @@ export interface MessageImage {
 export type AttachmentKind = 'image' | 'text' | 'sheet'
 
 /**
+ * A file the user has picked but not yet sent. Held by useComposer until
+ * submit turns it into a ChatMessage's `image`/`file`; `previewUrl` is an
+ * object URL (images only) that has to be revoked when it is dropped.
+ */
+export interface PendingAttachment {
+  kind: AttachmentKind
+  name: string
+  previewUrl?: string
+  base64: string
+  mediaType: string
+}
+
+/**
  * A reference to an attachment persisted server-side (GridFS, see
  * server/db.py's `attachment` field), for a message loaded from saved
  * history — display-only. Unlike MessageImage/MessageFile it carries no
