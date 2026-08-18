@@ -10,7 +10,7 @@ enough not to need one — 270M parameters, 640 dimensions, 94 languages
 spreadsheets and gold-price queries end to end), MIT licensed, with a
 published ONNX build so nothing here pulls in torch.
 
-Why it can't just call the model inline: every route in server/main.py is
+Why it can't just call the model inline: every route in server/routes/ is
 `async def` on one event loop, and that is the whole basis of this app
 serving many users at once. A forward pass is CPU-bound and would stall
 *every* concurrent request for its duration. So each call goes through

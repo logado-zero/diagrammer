@@ -29,7 +29,7 @@ tool exists to compensate for, which would make recall a net loss.
 It also records what it did, for later inspection rather than for the user:
 `retrieval_record()` builds one structured log entry per search — the query, and
 one entry per hit with its provenance and scores. That goes to `agent_logs` via
-main.py and is deliberately **never** sent to the browser. It first shipped as
+the chat route and is deliberately **never** sent to the browser. It first shipped as
 one `trace` event per hit, which was wrong twice over: it put raw retrieval
 internals in the chat UI, and it flattened a single structured thing into N
 unstructured rows in the log too.
@@ -172,7 +172,7 @@ def retrieval_record(
     ("ok" | "empty-query" | "unavailable" | "skipped"), and which entry point
     ran it ("tool" when the model called search_memory, "auto" when the turn
     retrieved on its own — see memory/context.py).
-    Output: one log entry for `agent_logs.steps` (see main.py) describing the
+    Output: one log entry for `agent_logs.steps` (see server/routes/chat.py) describing the
     whole search — never sent to the client.
 
     `source` exists because the two paths are the only way to tell them apart

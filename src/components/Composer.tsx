@@ -13,7 +13,6 @@ import {
   FileSpreadsheet,
   FileText,
   ImagePlus,
-  Mic,
   Plus,
   Wand2,
   Workflow,
@@ -307,15 +306,6 @@ export function Composer({
             )}
           </div>
 
-          <button
-            type="button"
-            aria-label="Voice input"
-            disabled
-            className="flex h-9 w-9 cursor-not-allowed items-center justify-center rounded-full opacity-50"
-            title="Voice input isn't available yet"
-          >
-            <Mic size={18} />
-          </button>
 
           <button
             type="button"

@@ -268,15 +268,6 @@ async def save_blob(filename: str, data: bytes, media_type: str, owner_id: Objec
     )
 
 
-async def load_blob(blob_id: ObjectId) -> bytes | None:
-    """Input: a GridFS file id. Output: its bytes, or None if it has been deleted."""
-    try:
-        stream = await attachments.open_download_stream(blob_id)
-    except NoFile:
-        return None
-    return await stream.read()
-
-
 async def count(scope: Scope) -> int:
     """Input: a scope. Output: how many units it contains. Used by the self-check and for capacity monitoring."""
     return await memory_units.count_documents(scope.as_filter())

@@ -195,7 +195,7 @@ async def run_agent_sdk_agent(
     try:
         async for message in query(prompt=prompt, options=options):
             # Whatever the memory handler logged since the last message. These
-            # are log-only records (main.py files them, never relays them), so
+            # are log-only records (the chat route files them, never relays them), so
             # unlike a status line their exact ordering doesn't matter — which is
             # just as well, since the handler runs between two SDK messages.
             while pending_records:

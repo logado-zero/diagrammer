@@ -6,7 +6,7 @@
  * canvas panel (CanvasPanel.tsx); this just notes that canvas changed.
  */
 import { memo, useState } from 'react'
-import { Copy, FileSpreadsheet, FileText, RotateCcw, Volume2 } from 'lucide-react'
+import { Copy, FileSpreadsheet, FileText, RotateCcw } from 'lucide-react'
 import type { ChatMessage } from '../types.ts'
 import { DonutMark } from './icons/DonutMark.tsx'
 import { ImageLightbox } from './ImageLightbox.tsx'
@@ -154,7 +154,6 @@ export const MessageBubble = memo(function MessageBubble({
                     setTimeout(() => setCopied(false), 1500)
                   }}
                 />
-                <IconButton icon={Volume2} label="Read aloud" />
                 <IconButton icon={RotateCcw} label="Retry" onClick={() => onRetry?.(message.id)} />
               </div>
               <DonutMark size={20} className="mt-3" />

@@ -30,9 +30,8 @@ made honestly without measurement.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from server.memory.entities import extract_entities
 from server.types import ChatRequestMessage
 
 # The assistant's half of the query. Capped because a long reply would dominate
@@ -56,14 +55,6 @@ _TRIVIAL = frozenset(
     """.split()
 )
 
-# Anything that points at a moment rather than a topic. Used by the graph view
-# and reported in the log so a ranking that ignored an explicit date is visible.
-_TIME_CUE_RE = re.compile(
-    r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|q[1-4]|yesterday|today|"
-    r"last (?:week|month|year|time)|earlier|before|ago|previous|recent|"
-    r"hôm qua|hôm nay|tuần trước|tháng trước|năm ngoái|trước đó|vừa rồi|lúc nãy)\b",
-    re.IGNORECASE,
-)
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -73,15 +64,16 @@ class QueryProfile:
     """
     What a cheap look at the user's message tells us before any retrieval runs.
 
-    `is_trivial` is the only field that changes control flow today; the others
-    are inputs to the graph view and to the retrieval log, where they are the
-    evidence for tuning any of this later.
+    `is_trivial` is the gate; `text` is what the skipped-retrieval log
+    records. There used to be three more fields — lowercased terms, extracted
+    entities and a time-cue flag — described here as inputs to the graph view
+    and the retrieval log. Nothing ever read them: retrieve.py runs
+    extract_entities() itself, over the two-message query rather than this
+    one-message text, so the profile's copy was both unused and computed from
+    the wrong string.
     """
 
     text: str
-    terms: list[str] = field(default_factory=list)
-    entities: list[str] = field(default_factory=list)
-    has_time_cue: bool = False
     is_trivial: bool = True
 
 
@@ -104,13 +96,7 @@ def profile(text: str) -> QueryProfile:
     else:
         trivial = len(text) < MIN_QUERY_CHARS or all(word in _TRIVIAL for word in lowered)
 
-    return QueryProfile(
-        text=text,
-        terms=lowered,
-        entities=extract_entities(text),
-        has_time_cue=bool(_TIME_CUE_RE.search(text)),
-        is_trivial=trivial,
-    )
+    return QueryProfile(text=text, is_trivial=trivial)
 
 
 def build_query(messages: list[ChatRequestMessage]) -> str:
@@ -160,9 +146,6 @@ def _demo() -> None:
         assert not profile(real).is_trivial, real
 
     # Time cues are detected in both languages.
-    assert profile("what did we say last week").has_time_cue
-    assert profile("giá vàng hôm qua").has_time_cue
-    assert not profile("draw a workflow for onboarding").has_time_cue
 
     # The query is built from two messages; the gate is not. This pairing is the
     # whole point of the file, so both directions get pinned.

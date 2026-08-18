@@ -66,7 +66,7 @@ async def dispatch_tool_call(
         # Nothing streams while this runs — an encode plus a vector scan — so
         # say what's happening, same as for a web search. The "retrieval"
         # events that follow are the log-only record of what came back
-        # (memory/tool.py's retrieval_record); main.py files them and does not
+        # (memory/tool.py's retrieval_record); the chat route files them and does not
         # relay them.
         events.append({"type": "trace", "label": MEMORY_SEARCH_LABEL})
         records: list[dict[str, Any]] = []

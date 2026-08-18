@@ -53,6 +53,12 @@ class RenderDiagramOutput(TypedDict, total=False):
 
     title: str
     mermaid: str
+    # {node id: hex color}, and only for the nodes the model coloured
+    # explicitly — omitted entirely otherwise. Added by agent.py's
+    # _node_colors() *after* the subagent runs, which is why it is not in
+    # anything the subagent returns. The client turns each entry into a
+    # Mermaid `class` statement; see src/types.ts's RenderDiagramInput.
+    colors: dict[str, str]
 
 
 class RenderChartInput(TypedDict, total=False):
@@ -122,7 +128,7 @@ class ChatRequestBody(BaseModel):
 
     messages: list[ChatRequestMessage]
     # Which saved conversation this turn belongs to (server/db.py). None means
-    # "start a new one" — main.py creates the document and tells the client its
+    # "start a new one" — the chat route creates the document and tells the client its
     # id over SSE, so there's no separate create route.
     conversation_id: str | None = Field(None, alias="conversationId")
     # Model catalog id from GET /api/models (see server/models.py). Falls back to DEFAULT_MODEL_ID.

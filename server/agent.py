@@ -1,7 +1,7 @@
 """
 Dispatcher: the one place that decides which of the three providers
 (server/providers/{api,agent_sdk,openai_provider}.py) handles a chat turn.
-server/main.py calls only run_agent() below and never branches on
+server/routes/chat.py calls only run_agent() below and never branches on
 provider itself.
 """
 
@@ -98,7 +98,7 @@ async def run_agent(
     scope: Scope | None = None,
 ) -> AgentEventStream:
     """
-    Entry point main.py calls for every POST /api/chat.
+    Entry point the chat route calls for every POST /api/chat.
     Input: the full chat history, plus an optional model catalog id,
     draw-mode selector ("auto" | "diagram" | "chart" — see tools.py's
     tools_for_mode(), which mode is threaded down to), and the memory scope
@@ -117,7 +117,7 @@ async def run_agent(
     `scope` is forwarded rather than used here: unlike diagram/chart, a
     search_memory call has to be answered *inside* each provider's own tool
     loop, so it can't be intercepted at this choke point the way the events
-    below are. Passing None (which main.py does when memory is off) removes
+    below are. Passing None (which the chat route does when memory is off) removes
     the tool and its prompt text entirely.
     """
     # Only the last HISTORY_LEN messages go to the model. Everything older is
@@ -168,7 +168,7 @@ async def run_agent(
         # A skipped turn is logged but silent: the gate fired before any work
         # happened, so there is nothing for the user to watch and claiming
         # otherwise would be the fabricated progress the trace box exists to
-        # avoid. main.py files the retrieval event into agent_logs either way
+        # avoid. the chat route files the retrieval event into agent_logs either way
         # and never relays it — see providers/types.py.
         if retrieval.get("status") != "skipped":
             yield {"type": "trace", "label": "Recalling from memory…"}

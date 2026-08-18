@@ -35,15 +35,6 @@ export const SEQUENTIAL_DARK = ['#184f95', '#256abf', '#3987e5', '#6da7ec', '#9e
 export const STATUS_GOOD = '#0ca30c'
 export const STATUS_CRITICAL = '#d03b3b'
 
-/**
- * Picks the i-th categorical color for the current theme.
- * Input: a series index + whether dark mode is active.
- * Output: a hex color string; wraps around if there are more series than colors.
- */
-export function categoricalColor(index: number, isDark: boolean): string {
-  const palette = isDark ? CATEGORICAL_DARK : CATEGORICAL_LIGHT
-  return palette[index % palette.length]
-}
 
 /**
  * The card's own Tailwind surface classes (bg-white / dark:bg-stone-900) as

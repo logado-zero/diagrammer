@@ -1,7 +1,7 @@
 """
 MongoDB handles for user accounts and saved conversations — the app's only
 persistent state (everything else about a chat turn is still stateless per
-request, see main.py).
+request, see server/routes/).
 
 Uses pymongo 4.9+'s built-in AsyncMongoClient rather than motor, which is
 deprecated and folded into pymongo itself. The client is constructed at
@@ -31,10 +31,10 @@ db = client[DB_NAME]
 # conversations  {_id, ownerId, title, titleLocked, createdAt, updatedAt,
 #                 messages: [ {role, text, diagrams, charts, trace, attachment, at} ]}
 #   attachment   {blobId, mediaType, kind: "image" | "file", name?} — set by
-#                main.py's _stored_user_message() when the turn's last message
+#                server/routes/chat.py's _stored_user_message() when the turn's last message
 #                carries an image/file. A reference, not the bytes: those go to
 #                the `attachments` GridFS bucket below (same bucket, same
-#                save_blob()/load_blob() helpers the memory layer uses), so
+#                save_blob() helper the memory layer uses), so
 #                reopening a conversation can show what was attached without
 #                putting megabytes of base64 in the document itself.
 #
@@ -87,7 +87,7 @@ attachments = AsyncGridFSBucket(db, bucket_name="attachments")
 # agent_logs  {_id, ownerId, conversationId, startedAt, endedAt,
 #              status: "done" | "error", steps: [{type, label, at}]}
 #
-# One document per turn, written once the turn finishes (see main.py's
+# One document per turn, written once the turn finishes (see server/routes/chat.py's
 # event_stream()) — a durable, queryable record of what the agent actually
 # did (the same trace-level phases ProcessTrace.tsx shows live, plus the
 # turn's final outcome), unlike the ephemeral UI trace which vanishes once

@@ -1,5 +1,5 @@
 /**
- * Client-side mirror of the shapes in server/src/types.ts (kept in sync by
+ * Client-side mirror of the shapes in server/types.py (kept in sync by
  * hand), plus types the server never sees (ChatMessage, ModelOption)
  * because they carry client-only UI state like isStreaming/previewUrl.
  */

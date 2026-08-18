@@ -95,11 +95,11 @@ async def index_turn(
 ) -> int:
     """
     Input: who owns the turn, its conversation, the user's original message
-    (attachments still attached), and the assistant reply main.py buffered
+    (attachments still attached), and the assistant reply the chat route buffered
     while streaming.
     Output: how many units were stored.
 
-    Call this as a background task, never inline — see main.py's
+    Call this as a background task, never inline — see server/routes/chat.py's
     `_spawn_memory_ingest`. It runs after the SSE stream has already closed, so
     encoding cost and the image-description call are invisible to the user.
 

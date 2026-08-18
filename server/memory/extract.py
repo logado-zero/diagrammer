@@ -164,8 +164,8 @@ async def units_from_turn(
 ) -> list[MemoryUnit]:
     """
     Input: who owns the turn, which conversation it belongs to, the user's
-    original message (attachments still attached — main.py has the request body
-    before agent.py inlines anything), the assistant reply main.py buffered
+    original message (attachments still attached — the chat route has the request body
+    before agent.py inlines anything), the assistant reply the chat route buffered
     while streaming, the sequence number to start numbering at, and the turn's
     timestamp.
     Output: every unit worth storing, in order, with `vec` still unset —

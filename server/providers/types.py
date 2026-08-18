@@ -1,12 +1,12 @@
 """
 The event shape every agent provider (api.py, agent_sdk.py,
-openai_provider.py) yields from its async generator, so server/main.py can
+openai_provider.py) yields from its async generator, so the chat route can
 relay events straight to the client as SSE without knowing which provider
-ran. A plain dict (not a pydantic model) on purpose — these are produced
-ad hoc by three different providers and only ever consumed by
-`json.dumps()` in main.py, so runtime validation would add cost with no
-benefit. AgentEvent below is a type-hint only, mirroring the Node
-backend's AgentEvent union for documentation.
+ran. A plain dict (not a pydantic model) on purpose — these are produced ad
+hoc by three different providers and only ever consumed by `json.dumps()` in
+server/routes/chat.py, so runtime validation would add cost with no benefit.
+AgentEvent below is a type-hint only, mirroring src/types.ts's ServerEvent
+union for documentation.
 
   {"type": "text", "text": str}              a chunk of streamed assistant text
   {"type": "diagram", "payload": dict}        a completed render_diagram tool call
@@ -21,14 +21,14 @@ backend's AgentEvent union for documentation.
                                                "auto" when the turn retrieved on its own before
                                                the provider ran (memory/context.py), which is the
                                                only place agent.py emits one of these itself.
-                                               **The one event main.py does not relay**: it is
+                                               **The one event the chat route does not relay**: it is
                                                filed into the agent_logs document and never
                                                reaches the browser, because it is diagnostic data
                                                rather than a user-facing status
   {"type": "error", "message": str}           something went wrong; no more events follow
   {"type": "done"}                            the turn finished successfully
 
-main.py adds two more event types of its own on top of these, for the
+The chat route adds two more event types of its own on top of these, for the
 saved-history feature:
 
   {"type": "conversation", "id": str, "title": str}

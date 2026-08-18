@@ -141,7 +141,7 @@ class SearchHit:
     role: Literal["user", "assistant"] = "user"
     at: datetime | None = None
     # Resolved from the `conversations` collection after fusion, not stored on
-    # the unit. Titles are renamed (see main.py's _maybe_generate_title, which
+    # the unit. Titles are renamed (see server/routes/chat.py's _maybe_generate_title, which
     # replaces the placeholder once a conversation is worth naming), and a copy
     # on every unit would be stale the moment that happened.
     conversation_title: str | None = None

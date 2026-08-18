@@ -5,7 +5,7 @@ Password hashing is stdlib `hashlib.scrypt` — no bcrypt/passlib. Sessions
 are rows in Mongo keyed by a random cookie token, not JWTs, so signing out
 actually revokes access instead of waiting for a token to expire.
 
-`current_user` is the FastAPI dependency every protected route in main.py
+`current_user` is the FastAPI dependency every protected route in server/routes/
 depends on; it is the only place a cookie is turned into a user.
 """
 

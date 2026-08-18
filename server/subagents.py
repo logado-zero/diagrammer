@@ -309,7 +309,7 @@ MAX_TITLE_CHARS = 60
 async def run_title_subagent(messages: list[dict[str, Any]], provider: str | None = None) -> str | None:
     """
     Names a saved conversation from its opening turns, for the history
-    sidebar (see main.py, which decides *when* to call this).
+    sidebar (see server/routes/chat.py, which decides *when* to call this).
     Input: the stored message dicts so far — text plus any diagram/chart
     titles, which is all the naming needs. Output: a short title, or None
     if no subagent client is configured or the call failed, in which case

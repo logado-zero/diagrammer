@@ -1,15 +1,12 @@
 """
 The single source of truth for every model the UI's picker can offer.
 Add a model by adding one entry to MODEL_CATALOG — nothing else needs to
-change (server/main.py's GET /api/models and agent.py both just read this
+change (server/routes/meta.py's GET /api/models and agent.py both just read this
 file).
 """
 
 import os
 from dataclasses import dataclass
-
-ModelProvider = str  # "claude" | "openai"
-
 
 @dataclass(frozen=True)
 class ModelOption:
@@ -18,7 +15,9 @@ class ModelOption:
     label: str
     # Short form shown in the composer's model badge, e.g. "Opus 5".
     short_label: str
-    provider: ModelProvider
+    # "claude" or "openai" — src/types.ts has the real union; Python has no
+    # runtime check here either way.
+    provider: str
     # The underlying model id passed to the provider SDK.
     model: str
     description: str | None = None

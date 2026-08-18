@@ -1,8 +1,8 @@
 """
 The tools the model can call, plus the system prompt telling it when to use
-each — shared by all three providers as-is. api.py and main.py consume these
-dicts directly (Anthropic + OpenAI both accept plain JSON Schema for tool
-definitions); agent_sdk.py passes the exact same `input_schema` dict straight
+each — shared by all three providers as-is. api.py and openai_provider.py
+consume these dicts directly (Anthropic + OpenAI both accept plain JSON
+Schema for tool definitions); agent_sdk.py passes the exact same `input_schema` dict straight
 into its `tool()` calls too, since the installed claude-agent-sdk passes a dict
 through unchanged whenever it already looks like JSON Schema (has "type" +
 "properties") — verified by reading the installed package's source rather than
