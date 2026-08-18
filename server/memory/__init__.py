@@ -61,10 +61,11 @@ Module map:
     demo.py     `python -m server.memory.demo`
 """
 
-from datetime import datetime
 from typing import Any
 
 from bson import ObjectId
+
+from server.shared import now
 
 from server.memory import extract, store
 from server.memory.context import select_context
@@ -122,7 +123,7 @@ async def index_turn(
         # cheap here — this runs in the background, after the user's response
         # has already been sent.
         base_seq=await store.count(scope),
-        at=datetime.now(),
+        at=now(),
     )
     if not units:
         return 0

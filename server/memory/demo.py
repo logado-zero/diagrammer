@@ -28,6 +28,7 @@ from bson import ObjectId
 from server.memory import context, entities, extract, graph, profile, retrieve, store, tool
 from server.memory.encoder import EMBED_DIM, EncoderUnavailable, encode, to_array
 from server.memory.types import MemoryUnit, Scope, SearchHit
+from server.shared import now
 
 
 def _check_pure() -> None:
@@ -326,7 +327,7 @@ async def _check_store(with_vectors: bool) -> None:
             role="user",
             text=text,
             seq=seq,
-            at=datetime.now(),
+            at=now(),
             entities=entities.extract_entities(text),
         )
 
