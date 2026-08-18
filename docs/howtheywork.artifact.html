@@ -662,7 +662,7 @@ sequenceDiagram
         </div>
         <div>
           <dt>Work that outlives the response</dt>
-          <dd>Memory indexing embeds several units and may call a vision model; none of that belongs in front of a response the user is already reading, so <code class="inline">_spawn_memory_ingest</code> schedules it and returns. The non-obvious part: <strong>asyncio holds only a weak reference to a running task</strong>, so a fire-and-forget <code class="inline">create_task()</code> nobody keeps can be garbage collected mid-flight. <code class="inline">_ingest_tasks</code> is a module-level set each task discards itself from.</dd>
+          <dd>Memory indexing embeds several units and may call a vision model; none of that belongs in front of a response the user is already reading, so <code class="inline">_spawn_memory_ingest</code> schedules it and returns. The non-obvious part: <strong>asyncio holds only a weak reference to a running task</strong>, so a fire-and-forget <code class="inline">create_task()</code> nobody keeps can be garbage collected mid-flight. <code class="inline">shared.spawn()</code> keeps every such task in a module-level set it discards itself from on completion — one helper, since the encoder warm-up needs the same thing.</dd>
         </div>
         <div>
           <dt>Nothing shared across requests</dt>
@@ -1854,7 +1854,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
       <dl class="deflist">
         <div>
           <dt>One state owner</dt>
-          <dd><code class="inline">App.tsx</code> holds all mutable state; every other component is a pure props-in view. If a value on screen is wrong, that's where it comes from.</dd>
+          <dd>Four hooks under <code class="inline">src/hooks/</code> hold all mutable state — session, saved history, the live turn, the unsent draft — and <code class="inline">App.tsx</code> is the only thing that sees all four. Every component is a pure props-in view. If a value on screen is wrong, one of those four is where it comes from.</dd>
         </div>
         <div>
           <dt>One shape crosses every boundary</dt>
@@ -1903,7 +1903,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet</pr
             <tr><td class="path">src/components/ChatHeader.tsx</td><td>Sticky conversation-title bar above the message list</td></tr>
             <tr><td class="path">src/components/Composer.tsx</td><td>Textarea + attach (Image/Text/Sheet) + draw-mode picker + model picker popovers + send button (used by both screens)</td></tr>
             <tr><td class="path">src/components/ChatView.tsx</td><td>Computes the latest diagram/chart (<code class="inline">findLatestVisual</code>) and switches between single-column and split-pane layout</td></tr>
-            <tr><td class="path">src/components/MessageBubble.tsx</td><td>One message — the user's bubble, or an assistant reply with its copy / retry / read-aloud row</td></tr>
+            <tr><td class="path">src/components/MessageBubble.tsx</td><td>One message — the user's bubble, or an assistant reply with its copy / retry row</td></tr>
             <tr><td class="path">src/components/CanvasPanel.tsx</td><td>Renders the latest diagram/chart full-size (Mermaid / Apache ECharts) in the split-pane layout</td></tr>
             <tr><td class="path">DiagramCard.tsx / ChartCard.tsx</td><td>The actual diagram/chart renderers, sized by their parent (CanvasPanel); ChartCard also has copy/download actions, DiagramCard's <code class="inline">buildColorOverrides()</code> applies any per-node colors</td></tr>
             <tr><td class="path">src/components/ProcessTrace.tsx</td><td>Collapsible agent-step box; status lines only, kept (collapsed) after the turn</td></tr>

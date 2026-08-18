@@ -958,7 +958,7 @@ attachments.*  # GridFS bucket: original bytes of an attached image or sheet
 
 A message's `attachment` is `{ blobId, mediaType, kind: "image" | "file",
 name? }` — a reference into the same GridFS `attachments` bucket the memory layer
-uses (`server/memory/store.py`'s `save_blob()`/`load_blob()`), not the bytes
+uses (`server/memory/store.py`'s `save_blob()`), not the bytes
 themselves. `routes/chat.py`'s `_stored_user_message()` uploads the blob when a turn's
 last message carries an image/file, and `GET /api/conversations/{id}` turns the
 reference into a fetchable `GET /api/attachments/{blobId}` URL (owner-checked
@@ -1074,8 +1074,9 @@ none of that belongs in front of a response the user is already reading, so
 `routes/chat.py`'s `_spawn_memory_ingest` schedules it and returns (via `shared.spawn`). The non-obvious
 part: **asyncio holds only a weak reference to a running task**, so a
 fire-and-forget `create_task()` whose result nobody keeps can be garbage
-collected mid-flight. `_ingest_tasks` is a module-level `set` each task discards
-itself from on completion.
+collected mid-flight. `shared.spawn()` keeps every such task in a module-level
+`set` it discards itself from on completion — one helper, since the encoder
+warm-up needs the same thing.
 
 **Decide per dependency whether it degrades or fails.** Enrichment degrades, the
 core fails loudly:
@@ -1097,13 +1098,16 @@ whose absence changes nothing but latency.
 
 ### Why the codebase is easy to track
 
-- **One state owner.** `App.tsx` holds all mutable state; every other component
-  is a pure props-in view.
+- **One state owner per concern.** Four hooks under `src/hooks/` hold all
+  mutable state — session, saved history, the live turn, the unsent draft — and
+  `App.tsx` is the only thing that sees all four. Every component is a pure
+  props-in view.
 - **One shape crosses every boundary.** The `AgentEvent`/`ServerEvent` dict
   (`text` | `diagram` | `chart` | `trace` | `retrieval` | `error` | `done`, plus
   `conversation` | `title` from `routes/chat.py`) is produced by a provider, forwarded
-  verbatim, and consumed verbatim by `App.tsx`'s reducer. Grep for that shape and
-  you've found every place a chat event is created or handled.
+  verbatim, and consumed verbatim by `useChatTurn`'s `applyEvent` reducer. Grep
+  for that shape and you've found every place a chat event is created or
+  handled.
 - **Almost no hidden state.** No router, no global store. The database holds
   accounts, conversations and memory, and answering a request reads from it in
   exactly two places — the automatic `select_context()` at the top of
@@ -1139,7 +1143,7 @@ whose absence changes nothing but latency.
 | `src/components/CardChrome.tsx` | The shell both canvas cards share, plus `ExportActions` (copy / download menu) |
 | `src/components/Composer.tsx` | Textarea + attach + draw-mode + model pickers + send |
 | `src/components/ChatView.tsx` | `findLatestVisual`; single-column vs split-pane |
-| `src/components/MessageBubble.tsx` | One message; user bubble, or assistant reply with copy/retry/read-aloud |
+| `src/components/MessageBubble.tsx` | One message; user bubble, or assistant reply with copy/retry |
 | `src/components/CanvasPanel.tsx` | Renders the latest diagram/chart full-size |
 | `src/components/DiagramCard.tsx` / `ChartCard.tsx` | Mermaid / ECharts renderers, Copy/Download; `buildColorOverrides()` applies per-node colors |
 | `src/components/ProcessTrace.tsx` | Collapsible agent-step box; status lines only, kept (collapsed) after the turn |
@@ -1148,7 +1152,7 @@ whose absence changes nothing but latency.
 | `src/components/icons/DonutMark.tsx` | The brand mark, inline SVG with its own gradient defs |
 | `public/favicon.svg` | Static twin of `DonutMark` for the browser tab — same geometry and gradients, on the mark's own `#232839` so it survives a light tab bar. Keep the two in sync |
 | `src/lib/theme.ts` | light/dark/system store: the `.dark` class, `setTheme()`, `useTheme()`, `useIsDark()` |
-| `src/lib/palette.ts` | Every literal color a visual uses: `CATEGORICAL_*`, `SEQUENTIAL_*`, the status pair |
+| `src/lib/palette.ts` | Every literal color a visual uses: `CATEGORICAL_*`, `SEQUENTIAL_*`, the status pair, `CARD_SURFACE`/`cardBackground()` |
 | `src/lib/useDismissablePopover.ts` | Outside-click + Escape ref, shared by the composer and card popovers |
 | `src/lib/demoData.ts` | `DEMO_MESSAGES` — what `?demo=1` renders instead of signing in |
 | `src/lib/slugify.ts` | Download filename stem; strips diacritics via NFD |
