@@ -9,8 +9,14 @@ from typing import Any
 
 import anthropic
 
-from server.memory import Scope, search_memory
-from server.providers.types import AgentEventStream
+from server.memory import Scope
+from server.providers.dispatch import (
+    IMAGE_ONLY_PROMPT,
+    WEB_FETCH_LABEL,
+    WEB_SEARCH_LABEL,
+    dispatch_tool_call,
+)
+from server.providers.types import AgentEvent, AgentEventStream
 from server.tools import system_prompt, tools_for_mode
 from server.types import ChatRequestMessage
 
@@ -23,11 +29,6 @@ MAX_TOKENS = 4096
 # is a single user request that spends four of these.
 MAX_TOOL_ITERATIONS = 8
 
-# Status line while a memory search runs, matching the web-search wording. Not
-# in _SERVER_TOOL_LABELS below: those are tools Anthropic executes, this one
-# runs in this process.
-MEMORY_SEARCH_LABEL = "Searching memory…"
-
 # Anthropic-run tools: the API executes these itself and puts the results in the
 # same response, so unlike render_diagram/render_chart there's no handler here
 # and no tool_result to send back. web_search returns ranked search hits (titles,
@@ -39,11 +40,13 @@ SERVER_TOOLS: list[dict[str, Any]] = [
     {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
 ]
 
-# Status lines for the client, keyed by server tool name (see agent.py, which
-# emits the same "trace" event type around the diagram/chart subagents).
+# Status lines for the client, keyed by *Anthropic's* server tool names. The
+# strings themselves come from providers/dispatch.py so all three transports
+# say the same thing (see agent.py, which emits the same "trace" event type
+# around the diagram/chart subagents).
 _SERVER_TOOL_LABELS = {
-    "web_search": "Searching the web…",
-    "web_fetch": "Reading a page…",
+    "web_search": WEB_SEARCH_LABEL,
+    "web_fetch": WEB_FETCH_LABEL,
 }
 
 # Anthropic's client does not throw if ANTHROPIC_API_KEY is unset (unlike
@@ -80,7 +83,7 @@ def _to_anthropic_messages(messages: list[ChatRequestMessage]) -> list[dict[str,
                         "data": m.image.data,
                     },
                 },
-                {"type": "text", "text": m.text or "Recreate this as an editable diagram or chart."},
+                {"type": "text", "text": m.text or IMAGE_ONLY_PROMPT},
             ]
             out.append({"role": "user", "content": content})
         else:
@@ -160,28 +163,10 @@ async def run_api_agent(
         tool_use_blocks = [b for b in message.content if b.type == "tool_use"]
         tool_results: list[dict[str, Any]] = []
         for block in tool_use_blocks:
-            if block.name == "render_diagram":
-                yield {"type": "diagram", "payload": block.input}
-                result = "Rendered to the user."
-            elif block.name == "render_chart":
-                yield {"type": "chart", "payload": block.input}
-                result = "Rendered to the user."
-            elif block.name == "search_memory" and scope is not None:
-                # Nothing streams while this runs — an encode plus a vector
-                # scan — so say what's happening, same as for a web search.
-                # The "retrieval" event that follows is the log-only record of
-                # what came back (memory/tool.py's retrieval_record); main.py
-                # files it and does not relay it.
-                yield {"type": "trace", "label": MEMORY_SEARCH_LABEL}
-                records: list[dict[str, Any]] = []
-                result = await search_memory(scope, block.input, records)
-                for record in records:
-                    yield {"type": "retrieval", **record}
-            else:
-                # Unreachable unless the model hallucinates a tool name. Saying
-                # so beats a silent empty result, which reads as a malfunction
-                # and gets retried.
-                result = f"Unknown tool: {block.name}."
+            events: list[AgentEvent] = []
+            result = await dispatch_tool_call(block.name, block.input, scope, events)
+            for event in events:
+                yield event
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
         messages.append({"role": "assistant", "content": _serialize_assistant_content(message.content)})

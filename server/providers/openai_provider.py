@@ -23,8 +23,9 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from server.memory import Scope, search_memory
-from server.providers.types import AgentEventStream
+from server.memory import Scope
+from server.providers.dispatch import IMAGE_ONLY_PROMPT, WEB_SEARCH_LABEL, dispatch_tool_call
+from server.providers.types import AgentEvent, AgentEventStream
 from server.tools import system_prompt, tools_for_mode
 from server.types import ChatRequestMessage
 
@@ -37,10 +38,6 @@ MAX_TOOL_ITERATIONS = 6
 # this process, so there's no handler and nothing to send back — same deal as
 # providers/api.py's SERVER_TOOLS, which is why it has the same name here.
 SERVER_TOOLS: list[dict[str, Any]] = [{"type": "web_search"}]
-
-# Status lines for the client, matching the Claude providers' wording.
-_SEARCH_LABEL = "Searching the web…"
-_MEMORY_LABEL = "Searching memory…"
 
 # Constructed lazily (not at import time) because the OpenAI SDK throws
 # eagerly in its constructor when no API key is configured, and this module
@@ -98,7 +95,7 @@ def _to_openai_input(messages: list[ChatRequestMessage]) -> list[dict[str, Any]]
                     "content": [
                         {
                             "type": "input_text",
-                            "text": m.text or "Recreate this as an editable diagram or chart.",
+                            "text": m.text or IMAGE_ONLY_PROMPT,
                         },
                         {
                             "type": "input_image",
@@ -158,7 +155,7 @@ async def run_openai_agent(
                 elif event.type == "response.output_item.added" and event.item.type == "web_search_call":
                     # Search runs on OpenAI's side and streams nothing while
                     # it works, so say what's happening.
-                    yield {"type": "trace", "label": _SEARCH_LABEL}
+                    yield {"type": "trace", "label": WEB_SEARCH_LABEL}
                 elif event.type == "response.completed":
                     output = list(event.response.output)
                 elif event.type == "error":
@@ -182,23 +179,11 @@ async def run_openai_agent(
                 # function_call must be followed by its function_call_output or
                 # the next request is rejected outright.
                 result = "That tool call could not be parsed. Try again with valid JSON arguments."
-                payload = {}
             else:
-                result = "Rendered to the user."
-                if call.name == "render_diagram":
-                    yield {"type": "diagram", "payload": payload}
-                elif call.name == "render_chart":
-                    yield {"type": "chart", "payload": payload}
-                elif call.name == "search_memory" and scope is not None:
-                    # Status line for the user, then the log-only record of what
-                    # the search returned — see providers/api.py.
-                    yield {"type": "trace", "label": _MEMORY_LABEL}
-                    records: list[dict[str, Any]] = []
-                    result = await search_memory(scope, payload, records)
-                    for record in records:
-                        yield {"type": "retrieval", **record}
-                else:
-                    result = f"Unknown tool: {call.name}."
+                events: list[AgentEvent] = []
+                result = await dispatch_tool_call(call.name, payload, scope, events)
+                for event in events:
+                    yield event
             outputs.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
 
         if not calls:

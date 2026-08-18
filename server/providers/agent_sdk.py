@@ -22,6 +22,12 @@ from claude_agent_sdk import (
 )
 
 from server.memory import Scope, search_memory
+from server.providers.dispatch import (
+    MEMORY_SEARCH_LABEL,
+    RENDERED_RESULT,
+    WEB_FETCH_LABEL,
+    WEB_SEARCH_LABEL,
+)
 from server.providers.types import AgentEventStream
 from server.tools import (
     RENDER_CHART_TOOL,
@@ -47,13 +53,12 @@ BUILTIN_TOOLS = ["WebSearch", "WebFetch"]
 # Status lines for the client while a built-in runs (api.py has the same map
 # keyed by that transport's own server-tool names). A CLI subprocess doing a
 # web search streams nothing for a while, so say what's happening.
-_BUILTIN_TOOL_LABELS = {"WebSearch": "Searching the web…", "WebFetch": "Reading a page…"}
+_BUILTIN_TOOL_LABELS = {"WebSearch": WEB_SEARCH_LABEL, "WebFetch": WEB_FETCH_LABEL}
 
 # Emitted when the model calls search_memory. Separate from the map above
 # because that one is keyed by Claude Code's own tool names, while this arrives
 # under the mcp__diagrammer__ prefix.
 _MEMORY_TOOL_NAME = f"mcp__diagrammer__{SEARCH_MEMORY_TOOL['name']}"
-_MEMORY_LABEL = "Searching memory…"
 
 
 def _allowed_tools_for_mode(mode: str | None, memory: bool) -> list[str]:
@@ -62,12 +67,14 @@ def _allowed_tools_for_mode(mode: str | None, memory: bool) -> list[str]:
     return names + BUILTIN_TOOLS
 
 
-async def _render_diagram_handler(_args: dict) -> dict:
-    return {"content": [{"type": "text", "text": "Rendered to the user."}]}
-
-
-async def _render_chart_handler(_args: dict) -> dict:
-    return {"content": [{"type": "text", "text": "Rendered to the user."}]}
+async def _rendered_handler(_args: dict) -> dict:
+    """
+    Both drawing tools' MCP handler. The payload never passes through here —
+    the SDK calls this out of band, and the tool-use block seen in the message
+    stream is what actually produces the client event (see run_agent_sdk_agent
+    below). All the model needs back is that it landed.
+    """
+    return {"content": [{"type": "text", "text": RENDERED_RESULT}]}
 
 
 # MCP tools reusing tools.py's JSON Schema dicts directly (no second, Zod-
@@ -80,13 +87,13 @@ _render_diagram_tool = tool(
     RENDER_DIAGRAM_TOOL["name"],
     RENDER_DIAGRAM_TOOL["description"],
     RENDER_DIAGRAM_TOOL["input_schema"],
-)(_render_diagram_handler)
+)(_rendered_handler)
 
 _render_chart_tool = tool(
     RENDER_CHART_TOOL["name"],
     RENDER_CHART_TOOL["description"],
     RENDER_CHART_TOOL["input_schema"],
-)(_render_chart_handler)
+)(_rendered_handler)
 
 
 def _build_mcp_server(scope: Scope | None, pending_records: list[dict]):
@@ -222,7 +229,7 @@ async def run_agent_sdk_agent(
                             # The handler itself can't yield — it's called by
                             # the MCP server, not from this loop — so the trace
                             # is emitted here, off the tool-use block instead.
-                            yield {"type": "trace", "label": _MEMORY_LABEL}
+                            yield {"type": "trace", "label": MEMORY_SEARCH_LABEL}
                         elif block.name in _BUILTIN_TOOL_LABELS:
                             yield {"type": "trace", "label": _BUILTIN_TOOL_LABELS[block.name]}
                 continue
