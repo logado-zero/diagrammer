@@ -4,8 +4,7 @@
  */
 import { BarChart3, GitBranch, Workflow } from 'lucide-react'
 import { DonutMark } from './icons/DonutMark.tsx'
-import { Composer, type ComposerAttachment } from './Composer.tsx'
-import type { AttachmentKind, DrawMode, ModelOption } from '../types.ts'
+import { Composer, type ComposerControls } from './Composer.tsx'
 
 const PILLS = [
   { label: 'Flowchart', icon: Workflow, prompt: 'Draw a flowchart for ' },
@@ -13,36 +12,12 @@ const PILLS = [
   { label: 'Chart', icon: BarChart3, prompt: 'Draw a bar chart of ' },
 ]
 
-interface WelcomeScreenProps {
-  value: string
-  onChange: (value: string) => void
-  onSubmit: () => void
-  attachment?: ComposerAttachment | null
-  onAttachFile: (file: File, kind: AttachmentKind) => void
-  onRemoveAttachment: () => void
+interface WelcomeScreenProps extends ComposerControls {
   onPickPrompt: (prompt: string) => void
-  models: ModelOption[]
-  modelId: string
-  onModelChange: (id: string) => void
-  mode: DrawMode
-  onModeChange: (mode: DrawMode) => void
 }
 
 /** Input: composer state/handlers + onPickPrompt for the quick-action pills. Output: the centered welcome layout. */
-export function WelcomeScreen({
-  value,
-  onChange,
-  onSubmit,
-  attachment,
-  onAttachFile,
-  onRemoveAttachment,
-  onPickPrompt,
-  models,
-  modelId,
-  onModelChange,
-  mode,
-  onModeChange,
-}: WelcomeScreenProps) {
+export function WelcomeScreen({ onPickPrompt, ...composer }: WelcomeScreenProps) {
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto px-4 py-10">
       <div className="w-full max-w-2xl">
@@ -53,20 +28,7 @@ export function WelcomeScreen({
           </h1>
         </div>
 
-        <Composer
-          value={value}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          placeholder="Describe a diagram, or attach an image to recreate"
-          attachment={attachment}
-          onAttachFile={onAttachFile}
-          onRemoveAttachment={onRemoveAttachment}
-          models={models}
-          modelId={modelId}
-          onModelChange={onModelChange}
-          mode={mode}
-          onModeChange={onModeChange}
-        />
+        <Composer {...composer} placeholder="Describe a diagram, or attach an image to recreate" />
 
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
           {PILLS.map(({ label, icon: Icon, prompt }) => (

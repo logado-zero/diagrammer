@@ -6,28 +6,17 @@
  * column; before that, a single centered column like the welcome screen.
  */
 import { useEffect, useRef } from 'react'
-import type { AttachmentKind, ChatMessage, DrawMode, ModelOption } from '../types.ts'
+import type { ChatMessage } from '../types.ts'
 import { ChatHeader } from './ChatHeader.tsx'
 import { MessageBubble } from './MessageBubble.tsx'
-import { Composer, type ComposerAttachment } from './Composer.tsx'
+import { Composer, type ComposerControls } from './Composer.tsx'
 import { CanvasPanel, type CanvasVisual } from './CanvasPanel.tsx'
 
-interface ChatViewProps {
+interface ChatViewProps extends ComposerControls {
   title: string
   messages: ChatMessage[]
-  value: string
-  onChange: (value: string) => void
-  onSubmit: () => void
   onRetry: (messageId: string) => void
   disabled: boolean
-  attachment?: ComposerAttachment | null
-  onAttachFile: (file: File, kind: AttachmentKind) => void
-  onRemoveAttachment: () => void
-  models: ModelOption[]
-  modelId: string
-  onModelChange: (id: string) => void
-  mode: DrawMode
-  onModeChange: (mode: DrawMode) => void
 }
 
 /**
@@ -46,23 +35,7 @@ function findLatestVisual(messages: ChatMessage[]): CanvasVisual | null {
 }
 
 /** Input: messages + composer state/handlers (ChatViewProps). Output: the assembled chat screen, auto-scrolled to the newest message. */
-export function ChatView({
-  title,
-  messages,
-  value,
-  onChange,
-  onSubmit,
-  onRetry,
-  disabled,
-  attachment,
-  onAttachFile,
-  onRemoveAttachment,
-  models,
-  modelId,
-  onModelChange,
-  mode,
-  onModeChange,
-}: ChatViewProps) {
+export function ChatView({ title, messages, onRetry, disabled, ...composerProps }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // `messages` changes on every streamed token, and a smooth scroll is a
@@ -85,21 +58,7 @@ export function ChatView({
   )
 
   const composer = (
-    <Composer
-      value={value}
-      onChange={onChange}
-      onSubmit={onSubmit}
-      placeholder="Write a message..."
-      disabled={disabled}
-      attachment={attachment}
-      onAttachFile={onAttachFile}
-      onRemoveAttachment={onRemoveAttachment}
-      models={models}
-      modelId={modelId}
-      onModelChange={onModelChange}
-      mode={mode}
-      onModeChange={onModeChange}
-    />
+    <Composer {...composerProps} placeholder="Write a message..." disabled={disabled} />
   )
 
   const disclaimer = (

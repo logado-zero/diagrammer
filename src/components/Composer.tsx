@@ -19,22 +19,20 @@ import {
   Workflow,
   X,
 } from 'lucide-react'
-import type { AttachmentKind, DrawMode, ModelOption } from '../types.ts'
+import type { AttachmentKind, DrawMode, ModelOption, PendingAttachment } from '../types.ts'
 import { useDismissablePopover } from '../lib/useDismissablePopover.ts'
 
-export interface ComposerAttachment {
-  kind: AttachmentKind
-  name: string
-  previewUrl?: string
-}
-
-interface ComposerProps {
+/**
+ * Everything the composer needs that a parent screen passes straight
+ * through. WelcomeScreen and ChatView each used to re-declare these ten
+ * fields, destructure them, and forward them one by one — so adding a
+ * composer prop was a five-file change.
+ */
+export interface ComposerControls {
   value: string
   onChange: (value: string) => void
   onSubmit: () => void
-  placeholder: string
-  disabled?: boolean
-  attachment?: ComposerAttachment | null
+  attachment?: PendingAttachment | null
   onAttachFile: (file: File, kind: AttachmentKind) => void
   onRemoveAttachment: () => void
   models: ModelOption[]
@@ -43,6 +41,18 @@ interface ComposerProps {
   mode: DrawMode
   onModeChange: (mode: DrawMode) => void
 }
+
+interface ComposerProps extends ComposerControls {
+  /** Set per screen, not forwarded from App. */
+  placeholder: string
+  disabled?: boolean
+}
+
+// The panel shape all three composer menus share (attach, draw mode, model).
+// Each supplies its own width and anchor edge; everything else is identical,
+// and was written out three times.
+const MENU_PANEL =
+  'absolute bottom-full z-20 mb-2 overflow-hidden rounded-2xl border border-stone-200 bg-white py-1.5 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40'
 
 const MODE_OPTIONS: { id: DrawMode; label: string; icon: ComponentType<{ size?: number }>; description: string }[] = [
   { id: 'auto', label: 'Auto', icon: Wand2, description: 'Let the model decide what to draw' },
@@ -166,7 +176,7 @@ export function Composer({
             <ul
               role="listbox"
               aria-label="Attach file"
-              className="absolute bottom-full left-0 z-20 mb-2 w-44 overflow-hidden rounded-2xl border border-stone-200 bg-white py-1.5 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40"
+              className={`${MENU_PANEL} left-0 w-44`}
             >
               {ATTACH_OPTIONS.map((opt) => (
                 <li key={opt.kind} role="option">
@@ -205,7 +215,7 @@ export function Composer({
               <ul
                 role="listbox"
                 aria-label="Draw mode"
-                className="absolute bottom-full left-0 z-20 mb-2 w-56 overflow-hidden rounded-2xl border border-stone-200 bg-white py-1.5 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40"
+                className={`${MENU_PANEL} left-0 w-56`}
               >
                 {MODE_OPTIONS.map((m) => {
                   const selected = m.id === mode
@@ -257,7 +267,7 @@ export function Composer({
               <ul
                 role="listbox"
                 aria-label="Model"
-                className="absolute bottom-full right-0 z-20 mb-2 w-64 overflow-hidden rounded-2xl border border-stone-200 bg-white py-1.5 shadow-lg shadow-black/10 dark:border-stone-700 dark:bg-stone-800 dark:shadow-black/40"
+                className={`${MENU_PANEL} right-0 w-64`}
               >
                 {models.map((m) => {
                   const selected = m.id === modelId
