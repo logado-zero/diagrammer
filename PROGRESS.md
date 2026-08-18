@@ -1,7 +1,7 @@
 # Diagrammer — Progress Log
 
 Decisions, constraints, and hard-won gotchas worth knowing before changing
-this project. Not a to-do list. **Current as of milestone 30 (2026-08-17)** —
+this project. Not a to-do list. **Current as of milestone 32 (2026-08-18)** —
 if the code disagrees with a line here, the code is right and this file is
 stale.
 
@@ -20,11 +20,18 @@ actually works lives elsewhere:
 - **Frontend**: React + Vite + TypeScript + Tailwind v4; Mermaid for
   flowcharts, ECharts for charts, both driven by tool-call JSON and polished by
   a second-pass subagent. Light/dark/system theme picker in the sidebar.
-- **Backend**: Python + FastAPI. Three interchangeable providers — Claude
-  direct API, Claude via a local `claude` CLI subprocess (personal-use only),
-  OpenAI — chosen per request by the UI model picker. Every route is
-  `async def` and nothing is shared and mutable, so `uvicorn --workers N` needs
-  no code changes. Every model can search the web, provider-natively.
+- **Backend**: Python + FastAPI. `main.py` builds the app; the routes live in
+  `server/routes/` (meta, conversations, attachments, chat). Three
+  interchangeable providers — Claude direct API, Claude via a local `claude`
+  CLI subprocess (personal-use only), OpenAI — chosen per request by the UI
+  model picker. Every route is `async def` and nothing is shared and mutable,
+  so `uvicorn --workers N` needs no code changes. Every model can search the
+  web, provider-natively.
+- **Model picker is temporarily gated to GPT-5.6 Luna** (milestone 32), which
+  is also the default. The other five entries are listed but greyed out and
+  refused by `POST /api/chat`. Two lines in `is_model_available()`; deleting
+  them restores the catalog. Consequence for anyone reading the rest of this
+  file: `providers/openai_provider.py` is what serves every turn today.
 - **Accounts + saved history**: user ID / password or guest sign-in;
   conversations in MongoDB (`chart-chatbot`), listed in a sidebar behind a
   confirm dialog for delete. Reopening one redraws its charts with no LLM call.
@@ -37,7 +44,9 @@ actually works lives elsewhere:
   messages are sent; older context returns through retrieval.
 - **Untested path**: no `ANTHROPIC_API_KEY` on this machine, so
   `providers/api.py` has never run live here — including `SERVER_TOOLS` web
-  search and the `pause_turn` branch. `agent-sdk` is what actually runs.
+  search and the `pause_turn` branch. `agent-sdk` is the transport a Claude
+  request would take; while the Luna gate is in place, neither Claude path is
+  reachable from the UI at all.
 - **UI-only work needs no backend**: `?demo=1` renders a pre-seeded chat from
   `src/lib/demoData.ts` and skips sign-in.
 
@@ -572,3 +581,48 @@ is in git history.
     went from a scrolling page to a fixed-height card with internal scroll,
     which also deleted the composer's fade-out gradient — nothing slides under
     it anymore.
+32. **Refactor pass, and six real bugs** — the app worked, but `main.py` was
+    599 lines, the three providers each carried their own copy of the same
+    tool-dispatch table, `App.tsx` owned 14 `useState`s, and the two canvas
+    cards shared ~90 copy-pasted lines. Nothing here changes what the app
+    does; it changes how much you have to read to change it. What moved:
+    routes into `server/routes/`, shared route helpers into `server/shared.py`
+    (one `now()`, one `owner_filter()`), the tool table into
+    `server/providers/dispatch.py`, the Mermaid `end`-keyword rule into
+    `server/mermaid.py`, client state into `src/hooks/`, and the cards' export
+    logic into `useImageExport` + `CardChrome`.
+
+    **The constraint this locks in:** shared *tables and strings*, not shared
+    *transports*. `providers/dispatch.py` owns the tool-name → event mapping
+    and the trace labels; the three `run_*_agent()` bodies stay three, and
+    `agent_sdk.py` deliberately does not use `dispatch_tool_call()` at all —
+    its MCP handlers are invoked by the SDK out of band and cannot yield, so
+    it can only observe tool-use blocks. Do not "finish the job" by giving the
+    providers a base class; see the rejected-alternatives entry above.
+
+    The bugs the survey turned up, each fixed in its own commit:
+    - `memory/__init__.py` stamped `memory_units.at` with `datetime.now()`
+      (local) while every other write to the same database used naive UTC. On
+      this UTC+7 machine that put every indexed turn 7 hours in the future, and
+      `at` is what `store.neighbours()` sorts by and what `tool.py` renders as
+      the date the model sees — so stale units outranked fresh ones. 25 of 27
+      existing rows were rewound using each document's own `_id.generation_time`
+      as the authority.
+    - `POST /api/chat` never consulted `is_model_available()`; greying an
+      option out in the picker was the only thing stopping a client from
+      posting it.
+    - `subagents.py` picked its provider by which env key existed, Anthropic
+      first, while `agent.py` dispatched on the model the user picked — so a
+      turn answered by an OpenAI model got its diagram polished by
+      `claude-haiku-4-5` whenever `ANTHROPIC_API_KEY` happened to be set.
+    - Attaching a second file before sending leaked the first object URL.
+    - The pending attachment survived New Chat and conversation switches, so an
+      image picked in one chat rode along into the next.
+    - A superseded turn's `setIsStreaming(false)` switched off the *new* turn's
+      flag (reachable by retrying mid-stream), leaving the composer enabled
+      while text was still arriving.
+
+    Three controls that rendered as interactive but had no handler were
+    deleted rather than wired: the chat header's title button (now an `<h2>`),
+    "Read aloud", and the composer's permanently-disabled mic. A focusable
+    control that does nothing is an accessibility bug, not a placeholder.

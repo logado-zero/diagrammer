@@ -57,19 +57,25 @@ the process holds no in-memory session state (sessions are rows in
 MongoDB), so it scales across CPU cores with no code changes — just run
 more uvicorn workers: `uvicorn server.main:app --workers 4 --port 8787`.
 
-- The model badge next to the attach button in the composer (default: "Opus
-  5") is a live dropdown, populated from `GET /api/models`. It lists Claude
-  Opus 5 / Sonnet 5 / Haiku 4.5 and OpenAI GPT-4o / GPT-4o mini / GPT-5.6
-  Luna; whichever one is selected is sent with each chat request and
-  remembered in `localStorage` across reloads.
+- The model badge next to the attach button in the composer is a live
+  dropdown, populated from `GET /api/models`. It lists Claude Opus 5 /
+  Sonnet 5 / Haiku 4.5 and OpenAI GPT-4o / GPT-4o mini / GPT-5.6 Luna;
+  whichever one is selected is sent with each chat request and remembered in
+  `localStorage` across reloads.
+- **Currently only GPT-5.6 Luna is selectable**, and it is the default. The
+  other five are listed but greyed out, and `POST /api/chat` refuses them.
+  This is a deliberate two-line gate in `is_model_available()`
+  (`server/models.py`) — delete `if option.id != "gpt-5.6-luna": return
+  False` to restore the full catalog. Everything below describes the design
+  as it works without that gate.
 - **Claude** needs no explicit "mode" setting: if `ANTHROPIC_API_KEY` is set
   in `.env`, Claude requests hit the API directly; if it's unset, they
-  automatically fall back to Agent SDK mode (see below) instead — the
-  Claude entries in the model picker are always shown as available.
-- **OpenAI** models need `OPENAI_API_KEY` set — without it they still show
-  in the picker but are grayed out (`available: false` from `GET
-  /api/models`), and `/api/chat` returns a clean error if one is selected
-  anyway.
+  automatically fall back to Agent SDK mode (see below) instead.
+- **OpenAI** models need `OPENAI_API_KEY` set — without it they show in the
+  picker greyed out (`available: false` from `GET /api/models`), and
+  `/api/chat` returns a clean error if one is selected anyway. The same
+  `is_model_available()` drives both, so the picker is presentation and the
+  route is enforcement.
 - **Web search**: every model can search the live web, so questions that
   depend on current information — today's prices, exchange rates, scores,
   news — get real answers with sources instead of "I don't have access to
@@ -111,29 +117,11 @@ backend to use — there's nothing to configure:
   login`) — including a Claude Pro/Max subscription — instead of a metered
   API key. No image uploads in this mode (text only), and it always uses
   `AGENT_SDK_MODEL` regardless of which Claude entry (Opus/Sonnet/Haiku) is
-  selected in the picker.
+  selected in the picker — none of which are selectable while the gate above
+  is in place.
 
 **Read `CLAUDE.md` → "Backend provider switch" before relying on the
 fallback** — Anthropic's own Agent SDK docs say third-party products
 aren't allowed to offer claude.ai login/rate limits to other users without
 prior approval. This mode is scoped to you running the app locally under
 your own login, never something to deploy for anyone else.
-
----
-
-# React + Vite
-
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
