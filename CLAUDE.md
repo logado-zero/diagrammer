@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Diagrammer** — a chat app that draws flowcharts and charts from a description, an image, or a spreadsheet. A React + Vite + TypeScript frontend talks over SSE to a Python/FastAPI backend, which asks an LLM (Claude or OpenAI, picked per request in the UI) to answer and optionally call a `render_diagram` / `render_chart` tool; a second-pass subagent polishes that payload before the client renders it with Mermaid or ECharts. Signed-in users get saved conversations in MongoDB, and every finished turn is indexed into a retrieval layer (`server/memory/`) that feeds older context back into later turns.
 
-It started life as a bare Vite scaffold — the directory is still named `ui-design` for that reason. There is no routing library and no component library; `src/App.tsx` owns all state and every component under `src/components/` is a props-in view.
+It started life as a bare Vite scaffold — the directory is still named `ui-design` for that reason. There is no routing library, no component library and no state library. Client state lives in four hooks under `src/hooks/` — `useAuth` (session), `useConversations` (saved history), `useChatTurn` (the live turn plus the `ServerEvent` → `ChatMessage` reducer), `useComposer` (unsent draft + attachment) — alongside `usePersistedState` for the localStorage-backed prefs and `useImageExport` for the canvas cards' copy/download. `src/App.tsx` wires them together and picks a screen; every component under `src/components/` is a props-in view with no state of its own beyond small local UI toggles.
 
 Two docs go deeper, and this file defers to them rather than repeating them:
 
@@ -66,16 +66,36 @@ some older note points you at `server/src/index.ts`, `server/tsconfig.json`, or
 npm deps like `express`/`@anthropic-ai/sdk`, none of those exist — the routes
 and SSE event shapes survived the rewrite unchanged, only the language moved.
 
-- `server/main.py` — the FastAPI app and the whole HTTP surface except auth:
-  `/api/chat`, `/api/models`, `/api/health`, `/api/conversations` (list, get,
-  delete, and `/{id}/logs`), `/api/attachments/{blobId}`. Plus CORS, a
-  body-size guard, one app-wide `PyMongoError` handler, turn persistence,
-  memory ingest scheduling, and the delete cascade. Loads `.env` via
-  `python-dotenv` as the very first thing it does (before importing anything
-  that reads an env var at import time).
+- `server/main.py` — app construction only: CORS, the body-size guard, the
+  one app-wide `PyMongoError` handler, the `lifespan` startup (index creation,
+  the banner, the encoder warm-up), and `include_router()` for everything
+  below. No route handler lives here. Loads `.env` via `python-dotenv` as the
+  very first thing it does (before importing anything that reads an env var at
+  import time).
+- `server/routes/` — the HTTP surface, one module per group:
+  - `meta.py` — `GET /api/health`, `GET /api/models` (no auth, no database).
+  - `conversations.py` — `GET /api/conversations`, `GET|DELETE
+    /api/conversations/{id}`, `GET /api/conversations/{id}/logs`, plus
+    `public_conversation()` and the delete cascade.
+  - `attachments.py` — `GET /api/attachments/{blobId}`.
+  - `chat.py` — `POST /api/chat`: turn persistence, titling, memory-ingest
+    scheduling, and `_Turn`, which buffers the streamed reply and the
+    `agent_logs` steps.
 - `server/auth.py` — the `/api/auth/*` router (`register`, `login`, `guest`,
   `logout`, `me`), scrypt hashing, and `current_user()`, the only place a
-  session cookie becomes a user.
+  session cookie becomes a user. Predates `routes/` and stays put, because
+  `current_user()` belongs next to the cookie handling that produces it.
+- `server/shared.py` — the helpers every route module uses: `now()`
+  (naive UTC, the only spelling), `owner_filter()` (the tenancy term, so
+  forgetting it is an import error rather than a cross-tenant read),
+  `object_id()`, `owned_conversation()`, and `spawn()` for fire-and-forget
+  background tasks. Deliberately *not* the same mechanism as `memory/`'s
+  `Scope.as_filter()` — that one is the memory package's own type-level
+  boundary, and the redundancy between them is the design.
+- `server/mermaid.py` — the Mermaid syntax rules more than one module has to
+  agree on (`end` is a reserved keyword, id/label sanitising). `agent.py`'s
+  colour map and `subagents.py`'s generated source both rewrite `end` →
+  `endNode`; they now do it with the same function.
 - `server/agent.py` — `run_agent(request_messages, model_id, mode, scope)`, the
   dispatcher and the one cross-provider choke point. Exactly one function other
   code calls; it never leaks which provider ran.
@@ -142,7 +162,7 @@ symptom (`ECONNREFUSED` + `dev:client` exiting) for a different reason.
 
 ### Concurrency: this backend serves multiple users at once
 
-Every route in `main.py` is `async def`, so FastAPI/uvicorn services many
+Every route in `server/routes/` is `async def`, so FastAPI/uvicorn services many
 concurrent requests on a single event loop without blocking each other
 while awaiting network I/O (Claude/OpenAI API calls) or subprocess I/O
 (the agent-sdk provider's local `claude` CLI). The app is fully stateless
@@ -158,10 +178,13 @@ below).
 
 ## Model catalog and the UI model picker
 
-`Composer.tsx`'s model badge (the "Opus 5 ▾"-style control next to the
-attach button) is a real, working model picker, not the decorative stub it
-started as — it's a native `<select>` layered invisibly over the styled
-badge text (accessible, no popover component needed). It's populated from
+`Composer.tsx`'s model badge (the "Luna ▾"-style control next to the attach
+button, showing the selected entry's `short_label`) is a real, working model
+picker, not the decorative stub it started as — a `<button
+aria-haspopup="listbox">` opening a `<ul role="listbox">` popover, sharing
+`MENU_PANEL` with the composer's other two menus. (An earlier note here
+described it as a native `<select>`; there is no `<select>` anywhere in
+`src/`.) It's populated from
 `GET /api/models` and the choice is sent as `model` on every `POST
 /api/chat` request (`ChatRequestBody.model` in `server/types.py`), and
 persisted client-side in `localStorage` (`diagrammer:model`).
@@ -170,10 +193,14 @@ persisted client-side in `localStorage` (`diagrammer:model`).
   models: `MODEL_CATALOG` (id, display label, provider, underlying model
   id), `DEFAULT_MODEL_ID`, `find_model_option()` (resolves an id to
   a catalog entry, falling back to the default for an unknown/missing id),
-  and `is_model_available()` (OpenAI entries need `OPENAI_API_KEY`; Claude
-  entries are always "available" — see below for why). Add a model by
-  adding one entry here; nothing else needs to change.
-- `GET /api/models` (`server/main.py`) returns the catalog annotated
+  and `is_model_available()` — read by **both** `GET /api/models` (to grey
+  the picker) and `POST /api/chat` (to refuse the turn), so the picker is
+  presentation and the route is enforcement. Normally OpenAI entries need
+  `OPENAI_API_KEY` and Claude entries are always "available" (see below for
+  why); right now a temporary gate overrides that — see "Currently gated to
+  one model". Add a model by adding one entry here; nothing else needs to
+  change.
+- `GET /api/models` (`server/routes/meta.py`) returns the catalog annotated
   with `available` per entry, plus `defaultModelId`. The client
   (`src/lib/api.ts` → `fetchModels()`) fetches this once on load; it never
   hardcodes the model list itself.
@@ -181,6 +208,27 @@ persisted client-side in `localStorage` (`diagrammer:model`).
   catalog entry and dispatches: an `openai`-provider entry always goes to
   `run_openai_agent`; a `claude`-provider entry goes through
   `resolve_claude_transport()` (below) to pick `api` vs `agent-sdk`.
+
+### Currently gated to one model (temporary)
+
+`is_model_available()` in `server/models.py` returns `False` for every
+catalog entry except `gpt-5.6-luna`, and `DEFAULT_MODEL_ID` is that entry.
+All six models still appear in the picker; the other five render greyed out
+and unselectable, and `POST /api/chat` refuses them with a 400.
+
+**This is a two-line guard, not an architectural change.** Delete these lines
+in `is_model_available()` to restore the full catalog:
+
+```python
+if option.id != "gpt-5.6-luna":
+    return False
+```
+
+Everything else in this file still describes the real design: three
+providers, the Claude API/agent-sdk transport switch, per-request model
+choice. The Claude paths are wired and working, just unreachable through the
+UI while the gate is in place — which also means `openai_provider.py` is what
+actually serves every turn today, not `agent_sdk.py`.
 
 ## Web search — declared per provider, never in `tools.py`
 
@@ -196,11 +244,13 @@ search API key, no new dependency, and no fetch/scrape loop here.
   the results inline, so there's no handler and no `tool_result` to send
   back. `max_uses: 5` each.
 - **`agent-sdk` transport** — Claude Code's `WebSearch` / `WebFetch`
-  built-ins, see the `BUILTIN_TOOLS` bullet below. **This is the transport
-  that actually runs on this machine** (`.env` has an empty
+  built-ins, see the `BUILTIN_TOOLS` bullet below. This is the transport any
+  Claude request would take on this machine (`.env` has an empty
   `ANTHROPIC_API_KEY`, so `resolve_claude_transport()` picks `agent-sdk`),
-  and it is verified working end-to-end — a "gold price in Vietnam today"
-  question comes back with real SJC buy/sell figures and source links.
+  and it was verified working end-to-end — a "gold price in Vietnam today"
+  question comes back with real SJC buy/sell figures and source links. **It
+  is not reachable through the UI right now**, see "Currently gated to one
+  model" above.
 - **`openai` transport** — OpenAI's built-in `web_search` tool
   (`SERVER_TOOLS` in `providers/openai_provider.py`), which is **why that
   provider is on the Responses API and not Chat Completions.** On Chat
@@ -233,7 +283,7 @@ prompt split unless a provider genuinely loses the capability.
 
 Three interchangeable backend implementations exist, all `async def ...
 yield ...` generator functions producing the same `AgentEvent` dict shape,
-so `server/main.py` never needs to know which one ran:
+so `server/routes/chat.py` never needs to know which one ran:
 
 - `server/providers/types.py` — the shared `AgentEvent` dict shape (a
   type-hint only, not a validated model — see "Backend: Python" above).
@@ -295,7 +345,8 @@ see `PROGRESS.md` for why `AGENT_PROVIDER`-style startup switches don't fit
 a per-request model picker).
 
 Whichever Claude transport is active applies to **every** Claude catalog
-entry the user might pick (Opus/Sonnet/Haiku) — `agent-sdk` mode ignores
+entry the user might pick (Opus/Sonnet/Haiku — none of them selectable while
+the temporary gate above is in place) — `agent-sdk` mode ignores
 the specific sub-model selection and always runs `AGENT_SDK_MODEL`,
 because (per the constraint below) API model ID strings aren't guaranteed
 to work with the Agent SDK. `api` mode and `openai` mode are both ordinary
