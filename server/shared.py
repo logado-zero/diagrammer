@@ -14,6 +14,8 @@ package enforces on itself (see server/memory/types.py); this one is a plain
 helper for the HTTP routes. The redundancy between them is the design.
 """
 
+import asyncio
+from collections.abc import Coroutine
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,3 +61,23 @@ async def owned_conversation(conversation_id: str, owner_id: ObjectId) -> dict[s
     if not doc:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return doc
+
+
+# Fire-and-forget tasks, held only so the garbage collector can't cancel them
+# mid-flight: asyncio keeps just a weak reference to a running task, so a
+# create_task() with no strong reference anywhere can vanish partway through.
+# Each task removes itself on completion.
+_background: set[asyncio.Task[Any]] = set()
+
+
+def spawn(coro: Coroutine[Any, Any, Any]) -> None:
+    """
+    Input: a coroutine. Output: none — schedules it and returns immediately.
+
+    The strong-reference dance above, written once. Both callers (background
+    memory ingest after a turn, and the encoder warm-up at startup) had their
+    own copy of it, comment included.
+    """
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
