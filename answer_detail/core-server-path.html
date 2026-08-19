@@ -279,12 +279,14 @@
   </div>
 
   <div class="callout">
-    <span class="tag">Where this page disagrees with HOWTHEYWORK.md</span>
-    <p>Checking each claim against the code turned up four that have drifted. Not every route is
+    <span class="tag">These pages agree — they didn't at first</span>
+    <p>Checking each claim against the code turned up seven that had drifted: not every route is
     <code>async def</code>; the encoder is <em>not</em> the only CPU-bound work on the loop; only the
-    subagent traces are centralised in <code>run_agent()</code>; and per-process state is a slightly longer
-    list than "two lazy clients". Each is corrected in place below, marked like this box. The source doc is
-    a summary written when those things were true — this is what the code says today.</p>
+    subagent traces are centralised in <code>run_agent()</code>; the memory tool's table <em>is</em> shared
+    now; per-process state is a longer list than "two lazy clients"; the model load sits outside the
+    semaphore; and one quoted error string was a paraphrase. <strong><code>HOWTHEYWORK.md</code> and its
+    published twin have since been corrected</strong>, so the two now say the same thing — the boxes below
+    keep the detail on <em>why</em> each one was wrong, which is usually the more useful half.</p>
   </div>
 
   <figure>
@@ -400,7 +402,7 @@
 
     <div class="callout">
       <span class="tag">Precision worth having — only <em>some</em> traces are centralised</span>
-      <p>The doc says trace events live in <code>run_agent()</code> "rather than three times over". Only the
+      <p>The doc used to say trace events live in <code>run_agent()</code> "rather than three times over". Only the
       <strong>subagent</strong> traces do (six of them, plus "Recalling from memory…"). The web-search,
       web-fetch and memory-search traces are emitted <em>inside each provider</em> — what is shared is the
       label <em>strings</em>, in <code>providers/dispatch.py</code>. That matters because
@@ -494,8 +496,8 @@
     <p>
       What <em>can</em> still be shared is the table underneath — tool name → client event → result string,
       plus the trace labels. That lives in <code>providers/dispatch.py</code>, and <code>api.py</code> and
-      <code>openai_provider.py</code> each call it in one line. What stays per-provider is narrower than the
-      doc's "three-line branch" suggests: it is the <strong>envelope</strong> around the result
+      <code>openai_provider.py</code> each call it in one line. What stays per-provider is narrower than
+      "a branch per provider" suggests: it is the <strong>envelope</strong> around the result
       (<code>tool_result</code> with a <code>tool_use_id</code> vs <code>function_call_output</code> with a
       <code>call_id</code>) and <strong>when in the loop</strong> the result is produced, because a
       non-terminal result has to flow into the <em>next</em> request.
@@ -595,13 +597,14 @@
     </figure>
 
     <div class="callout">
-      <span class="tag">Two corrections this page owes you</span>
-      <p><strong>"Every route is <code>async def</code>" is not true today.</strong>
+      <span class="tag">The exception that looks like a rule</span>
+      <p><strong>"Every route is <code>async def</code>" was not true.</strong>
       <code>GET /api/health</code> and <code>GET /api/models</code> are plain <code>def</code>
       (<code>routes/meta.py</code>). FastAPI notices and runs them in its own threadpool, so nothing blocks
       — but the mechanism is different from the rest of the app, and the claim is also asserted, wrongly,
-      in <code>main.py</code>'s own module docstring. Both are pure config reads with no I/O, so this is
-      harmless; it is worth knowing precisely because it looks like a rule and isn't.</p>
+      in <code>main.py</code>'s own module docstring — both since corrected to "every route that touches
+      I/O". Both handlers are pure config reads with no I/O, so this is harmless; it is worth knowing
+      precisely because it looks like a rule with two violations, and isn't.</p>
     </div>
 
     <h4>Where CPU still runs on the loop</h4>
@@ -992,7 +995,7 @@
       actual test for "shareable": if losing it would change an <em>answer</em>, it is state and it does not
       belong in the process.
     </p>
-    <p class="src">Worth noting: HOWTHEYWORK.md says "the only per-process state is the two lazily-built clients". Grepping for `global` in server/ returns exactly two names — but the eager Anthropic client, the background-task set and the Mongo handles are module-level too. All harmless; the list is just longer than two.</p>
+    <p class="src">Grepping for `global` in server/ returns exactly two names, which is where the old "only two lazily-built clients" line came from — but the eager Anthropic client, the background-task set and the Mongo handles are module-level too. All harmless; the list is just longer than two.</p>
 
     <h4>What breaks without it</h4>
     <div class="breaks">

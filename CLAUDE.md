@@ -162,7 +162,7 @@ symptom (`ECONNREFUSED` + `dev:client` exiting) for a different reason.
 
 ### Concurrency: this backend serves multiple users at once
 
-Every route in `server/routes/` is `async def`, so FastAPI/uvicorn services many
+Every route that touches I/O is `async def`, so FastAPI/uvicorn services many
 concurrent requests on a single event loop without blocking each other
 while awaiting network I/O (Claude/OpenAI API calls) or subprocess I/O
 (the agent-sdk provider's local `claude` CLI). The app is fully stateless

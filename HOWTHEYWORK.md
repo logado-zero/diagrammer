@@ -1029,37 +1029,88 @@ These recur in several files, and getting one wrong shows up as a whole-app
 problem rather than a local bug. Read them once you've followed a request end to
 end; they'll make more sense with the flow in mind.
 
+Each one is stated here in a paragraph. `answer_detail/core-server-path.html` is
+the long version — the same eight with the mechanism underneath each, a diagram,
+and the specific failure you get without it.
+
 **One choke point per cross-cutting concern.** `agent.py`'s `run_agent()` is the
 single place every provider's output passes through, so attachment inlining, the
-subagent pass, and `trace` events live there rather than three times over. The
-same instinct puts persistence and memory ingest in `routes/chat.py` (route concerns,
-not generation concerns) and the tool list in `tools.py`. When a feature needs
-*different* handling per provider — web search's tool definitions — that's the
-signal it doesn't belong in a choke point.
+subagent pass, and the `trace` events *around that pass* live there rather than
+three times over — along with `_clean_title()` and `_node_colors()`, which apply
+to every payload whichever provider produced it. The same instinct puts
+persistence and memory ingest in `routes/chat.py` (route concerns, not generation
+concerns) and the tool list in `tools.py`. When a feature needs *different*
+handling per provider — web search's tool definitions — that's the signal it
+doesn't belong in a choke point.
+
+Be precise about which traces, though: the web-search, web-fetch and
+memory-search labels are emitted *inside* each provider, because that's where
+those tools run. What's centralised for those is the label **strings**, in
+`providers/dispatch.py`. That's the right split — `ProcessTrace.tsx` renders them
+verbatim, so sharing the strings makes drift impossible, while sharing the
+emission would mean reaching into three streaming loops.
 
 **A choke point works on outputs, not on tool results.** Worth knowing before
 adding a third tool: `run_agent()` can intercept a `diagram`/`chart` event
 because those are *terminal* — the provider yields the event and answers the
 model with a fixed string, so nothing has to flow back. A tool whose result the
-model actually reads (`search_memory`) must be answered *inside* each provider's
-own loop, so it cannot be centralized the same way. What `agent.py` centralizes
-instead is the input: it forwards one `Scope`, and each provider handles the tool
-in its own three-line branch.
+model actually reads (`search_memory`) must be answered *inside* the provider's
+own loop, because that result has to reach the next request. So `agent.py`
+centralizes the input instead: it forwards one `Scope` and never touches the
+tool.
 
-**`async def` end to end, and what's allowed to block.** Every route runs on one
-event loop, which is what lets one process serve many users. The rule is that
-anything slow must be *awaitable* I/O, not CPU. Network calls (Claude, OpenAI,
-MongoDB) and subprocess I/O (the `agent-sdk` CLI) already are.
+What *can* still be shared is the table underneath — tool name → client event →
+result string, plus the trace labels — and it is, in `providers/dispatch.py`;
+`api.py` and `openai_provider.py` each call `dispatch_tool_call()` in one line.
+What stays per-provider is narrower than it sounds: the **envelope** around the
+result (`tool_result` + `tool_use_id` vs `function_call_output` + `call_id`) and
+*when in the loop* it is produced. `agent_sdk.py` is the real exception and takes
+only the constants — its MCP handlers are invoked by the SDK out of band and
+cannot yield, so it observes tool-use blocks and closes over the `Scope` per
+request.
 
-**CPU-bound work goes through `asyncio.to_thread` with a semaphore.** The memory
-encoder is the only genuinely CPU-bound thing here, and running it inline would
-freeze every concurrent request for the length of a forward pass.
-`memory/encoder.py` wraps each call in `asyncio.to_thread` — onnxruntime releases
-the GIL, so the loop keeps running — behind
-`asyncio.Semaphore(MEMORY_ENCODER_CONCURRENCY)` so N concurrent chats can't spawn
-N inference threads. onnxruntime's own `intra_op_num_threads` is pinned to 2 for
-the same reason: left at its default, `--workers 4` would have four processes
-each sizing a thread pool to every core.
+**`async def` end to end, and what's allowed to block.** Every route that touches
+I/O runs on one event loop, which is what lets one process serve many users. The
+rule is that anything slow must be *awaitable* I/O, not CPU. Network calls
+(Claude, OpenAI, MongoDB) and subprocess I/O (the `agent-sdk` CLI) already are.
+
+Two routes are plain `def` and that's fine: `GET /api/health` and `GET
+/api/models` (`routes/meta.py`) are pure reads of process configuration with no
+I/O at all, and FastAPI runs a sync handler in its own threadpool rather than on
+the loop. Worth knowing precisely because it looks like a rule with two
+violations, and isn't.
+
+**CPU-bound work goes through `asyncio.to_thread` with a semaphore.** Running a
+forward pass inline would freeze every concurrent request for its duration, so
+`memory/encoder.py` wraps the *encode* in `asyncio.to_thread` — onnxruntime
+releases the GIL, so the loop keeps running — behind
+`asyncio.Semaphore(MEMORY_ENCODER_CONCURRENCY)` (default 4) so N concurrent chats
+can't spawn N inference threads. The semaphore matters because `to_thread`
+submits to the loop's default executor, which is sized `min(32, cpu_count() + 4)`
+— generous enough to oversubscribe the CPU on its own. onnxruntime's
+`intra_op_num_threads` is pinned to 2 for the same reason at a third level: left
+at its default, `--workers 4` would have four processes each sizing a thread pool
+to every core.
+
+Note the one-time model load is *not* inside the semaphore — `encode()` awaits
+`_load()` first, and that ~4s load is bounded by the lock instead, so it can
+overlap with up to four in-flight encodes. That's why the warm-up at startup
+exists: it moves the 4s to a moment when nobody is waiting.
+
+**Know which CPU work is still on the loop.** The encoder got this treatment
+because it was the one measured to matter, not because it is the only candidate.
+Four things still run CPU-bound on the loop today, all bounded and all deliberate:
+
+| Work | Cost | Runs on |
+|---|---|---|
+| scrypt password hashing (`auth.py`) | ~100ms, ~16MB per hash — slow *on purpose*, that's the security property | every register and login |
+| openpyxl workbook parsing (`attachments.py`) | scales with sheet size, capped at `MAX_ROWS` | any turn with an `.xlsx` attached |
+| dense vector scan (`memory/store.py`) | ~25MB read + a matrix multiply at the ~10k-unit ceiling | every turn that clears the retrieval gate |
+| Personalized PageRank (`memory/graph.py`) | 20 iterations over ≤600 nodes | every graph-view retrieval |
+
+None is a bug. But ~100ms of scrypt on the loop means a burst of logins is felt
+by everyone mid-conversation, so this is the list to reach for if that ever shows
+up in a trace.
 
 **Expensive clients are built lazily, under a lock.** Two places do this:
 `openai_provider._get_client()` (the OpenAI SDK throws in its constructor when no
@@ -1087,14 +1138,19 @@ core fails loudly:
 | Title subagent fails | Placeholder title stays; a title is cosmetic |
 | Memory encoder unavailable | Unit stored with `vec: null`; dense retrieval skipped, lexical still works |
 | Memory indexing throws | Logged, swallowed; the turn was already answered and stored |
-| `search_memory` throws | Tool returns "memory is unavailable"; the model answers from context |
+| `search_memory` throws | Tool returns *"Memory search is temporarily unavailable. Answer from the conversation in front of you and say plainly if something can't be recalled."* — deliberately distinct from its no-results string, so the model can tell "nothing matched" from "the search is broken" |
 | MongoDB unreachable at startup | Server boots and prints why; `/api/health` stays green |
 | MongoDB unreachable in a route | One app-wide handler returns 503 with a readable message |
 
 **Nothing is shared across requests, so `--workers N` stays free.** Sessions live
-in the database, not process memory; the Mongo client is a connection pool; the
-only per-process state is the two lazily-built clients above, and both are caches
-whose absence changes nothing but latency.
+in the database, not process memory, and a chat request carries its own full
+history. Module-level state in `server/` is a short, checkable list: the two
+lazily-built clients above, the eagerly-built Anthropic client (`api.py` — its
+SDK, unlike OpenAI's, doesn't throw without a key, so there's nothing to defer),
+`shared._background`, and the Mongo client and collection handles. Every one is a
+cache, a coordinator or a connection pool whose absence would change latency, not
+an answer — which is the actual test for whether something may live in the
+process.
 
 ### Why the codebase is easy to track
 
@@ -1229,10 +1285,11 @@ source is `docs/howtheywork.artifact.html`. Publishing `HOWTHEYWORK.md` over tha
 URL would replace the design with plain markdown.
 
 **The repo copy and the live page are in sync** as of 2026-08-18, milestone 32.
-That republish carried everything that had been sitting unpublished since
-milestone 30 — the Theming section and surface ladder, the delete-confirm note,
-the completed file map — plus the push-path lead paragraph and the milestone-32
-refactor (`server/routes/`, `src/hooks/`, `providers/dispatch.py`).
+The last republish carried everything unpublished since milestone 30 — the
+Theming section and surface ladder, the delete-confirm note, the completed file
+map — plus the push-path lead paragraph, the milestone-32 refactor
+(`server/routes/`, `src/hooks/`, `providers/dispatch.py`), and the seven
+cross-cutting-pattern claims reconciled against the code.
 
 To update it: edit `docs/howtheywork.artifact.html`, then republish that file to
 the URL above. The repo copy exists because the first two updates had to

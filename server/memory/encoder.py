@@ -10,13 +10,15 @@ enough not to need one — 270M parameters, 640 dimensions, 94 languages
 spreadsheets and gold-price queries end to end), MIT licensed, with a
 published ONNX build so nothing here pulls in torch.
 
-Why it can't just call the model inline: every route in server/routes/ is
-`async def` on one event loop, and that is the whole basis of this app
-serving many users at once. A forward pass is CPU-bound and would stall
-*every* concurrent request for its duration. So each call goes through
-`asyncio.to_thread` — onnxruntime releases the GIL during inference, so the
-loop keeps running — behind a semaphore that bounds how many passes happen
-at once.
+Why it can't just call the model inline: the routes that do real work in
+server/routes/ are `async def` on one event loop, and that is the whole
+basis of this app serving many users at once. A forward pass is CPU-bound
+and would stall *every* concurrent request for its duration. So the encode
+goes through `asyncio.to_thread` — onnxruntime releases the GIL during
+inference, so the loop keeps running — behind a semaphore that bounds how
+many passes happen at once. The one-time `_load()` is bounded by the lock
+instead, not by that semaphore, so a cold load can overlap with in-flight
+encodes; main.py's lifespan warms it at startup for that reason.
 
 Three model-specific details are load-bearing and easy to get wrong:
 

@@ -6,10 +6,13 @@ The routes themselves live in server/routes/ (meta, conversations,
 attachments, chat) and server/auth.py. Nothing in this file handles a request
 body — if you are looking for what a route *does*, it is in one of those.
 
-Concurrency (multiple users at once): every route is `async def`, so
-FastAPI/uvicorn services many concurrent requests on one event loop without
-blocking each other while awaiting network I/O (calls to Anthropic/OpenAI, and
-MongoDB) or subprocess I/O (the agent-sdk provider's local `claude` CLI). There
+Concurrency (multiple users at once): every route that touches I/O is
+`async def`, so FastAPI/uvicorn services many concurrent requests on one event
+loop without blocking each other while awaiting network I/O (calls to
+Anthropic/OpenAI, and MongoDB) or subprocess I/O (the agent-sdk provider's local
+`claude` CLI). The two exceptions are routes/meta.py's health and models
+handlers: pure config reads with no I/O, left sync so FastAPI runs them in its
+own threadpool. There
 is no shared mutable state per request — the Mongo client is a connection pool,
 not request state — so this process can also be scaled across CPU cores by
 running multiple uvicorn worker processes (`uvicorn server.main:app --workers

@@ -24,7 +24,9 @@ actually works lives elsewhere:
   `server/routes/` (meta, conversations, attachments, chat). Three
   interchangeable providers — Claude direct API, Claude via a local `claude`
   CLI subprocess (personal-use only), OpenAI — chosen per request by the UI
-  model picker. Every route is `async def` and nothing is shared and mutable,
+  model picker. Every route that touches I/O is `async def` (the two config-only
+  reads in `routes/meta.py` are sync, and FastAPI threadpools them) and nothing is
+  shared and mutable,
   so `uvicorn --workers N` needs no code changes. Every model can search the
   web, provider-natively.
 - **Model picker is temporarily gated to GPT-5.6 Luna** (milestone 32), which
