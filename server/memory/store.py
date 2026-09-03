@@ -27,7 +27,6 @@ from typing import Any
 
 import numpy as np
 from bson import ObjectId
-from gridfs.errors import NoFile
 from pymongo import UpdateOne
 
 from server.db import attachments, conversations, memory_edges, memory_units

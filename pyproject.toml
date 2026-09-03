@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = ["server/migrations"]
+
+[tool.ruff.lint]
+# pyflakes/pycodestyle errors + isort + pyupgrade: catches real bugs
+# (unused imports, undefined names) with near-zero false positives, and
+# `ruff check --fix` cleans up all of it mechanically. Deliberately not
+# enabling stricter rule sets (ANN, D, S, PL) on a codebase with zero prior
+# linting — bandit already covers the security-rule overlap.
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["server/tests"]
+
+[tool.bandit]
+# B101 (assert_used) fires on every assert in this codebase's _demo()
+# self-checks and server/tests/ — that's the established test convention
+# here (see CLAUDE.md), not a security issue; asserts are never used for
+# request-time validation.
+skips = ["B101"]

@@ -9,6 +9,7 @@ import os
 import re
 from typing import Any, Literal
 
+from server import mermaid
 from server.attachments import inline_file_attachment
 from server.memory import Scope, select_context
 from server.models import find_model_option
@@ -16,7 +17,6 @@ from server.providers.agent_sdk import run_agent_sdk_agent
 from server.providers.api import run_api_agent
 from server.providers.openai_provider import run_openai_agent
 from server.providers.types import AgentEventStream
-from server import mermaid
 from server.subagents import run_chart_subagent, run_flowchart_subagent
 from server.types import ChatRequestMessage
 

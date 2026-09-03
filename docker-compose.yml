@@ -1,0 +1,36 @@
+# Local "build and run the Docker image" smoke test — not used by CI, which
+# uses GitHub Actions' own mongo service container instead. Usage:
+#
+#   docker compose up --build
+#   curl localhost:8787/api/health
+#
+# Put ANTHROPIC_API_KEY / OPENAI_API_KEY / etc in a .env file at repo root
+# (see .env.example) if you want chat to actually work; health/models/auth
+# routes work without any of that.
+services:
+  app:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      PORT: "8787"
+      MEMORY_MODEL_DIR: /app/.cache/harrier
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      - mongo
+    volumes:
+      - model-cache:/app/.cache
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
+  model-cache:

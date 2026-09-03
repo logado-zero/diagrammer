@@ -117,7 +117,15 @@ def _load_blocking() -> tuple[Any, Any]:
         repo_id=MODEL_ID,
         local_dir=_MODEL_DIR,
         allow_patterns=[_ONNX_FILE, f"{_ONNX_FILE}_data", "tokenizer.json", "config.json"],
-    )
+        # No revision= pin (bandit B615): every stored vector is only valid
+        # against the exact weights that produced it (see types.py's
+        # embed_model/embed_dim fields), so a silent weight change on the Hub
+        # would need a backfill anyway — a stale pinned commit with no update
+        # path is a worse failure mode than trusting the repo's default
+        # revision, which is what this deliberately does. Revisit if this
+        # repo ever ships to an environment where a compromised upstream
+        # model repo is a real threat model.
+    )  # nosec B615
 
     tokenizer = Tokenizer.from_file(str(Path(local_dir) / "tokenizer.json"))
     tokenizer.enable_truncation(max_length=MAX_TOKENS)

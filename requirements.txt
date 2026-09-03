@@ -1,0 +1,17 @@
+# Mirrors environment.yml's pip: block exactly — this file exists so CI and
+# Docker can `pip install` in a plain python:3.12-slim image without pulling
+# in conda. Keep the two lists in sync by hand; environment.yml stays the
+# source of truth for local dev.
+fastapi
+uvicorn[standard]
+anthropic
+openai
+claude-agent-sdk
+python-dotenv
+pydantic
+openpyxl
+pymongo>=4.9
+numpy
+onnxruntime
+tokenizers
+huggingface_hub
