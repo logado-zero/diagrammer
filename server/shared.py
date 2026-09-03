@@ -4,9 +4,8 @@ Small helpers shared by every route module.
 The point of this file is that "which rows belong to this user" and "what a
 timestamp looks like" each have exactly one spelling. Both used to be written
 out per call site — four owner filters in main.py alone, five copies of the
-naive-UTC `datetime.now(timezone.utc).replace(tzinfo=None)` dance — which is
-how server/memory/__init__.py ended up writing *local* time into the same
-collection everything else wrote UTC into.
+timestamp dance — which is how server/memory/__init__.py ended up writing a
+different clock into the same collection everything else wrote.
 
 Note this is deliberately not the same mechanism as server/memory/'s
 `Scope.as_filter()`. That one is a type-level tenant boundary the memory
@@ -16,8 +15,9 @@ helper for the HTTP routes. The redundancy between them is the design.
 
 import asyncio
 from collections.abc import Coroutine
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -26,9 +26,20 @@ from fastapi import HTTPException
 from server.db import conversations
 
 
+# Every timestamp this backend writes is naive Vietnam local time. Naive
+# because BSON has no timezone, so whatever datetime goes in is what mongosh
+# and Compass read back out — storing UTC meant every row in the database
+# displayed 7 hours behind the wall clock of the only person reading it, and
+# memory/tool.py renders `at` as the date the *model* sees for a recalled
+# turn, which put anything after 17:00 on the wrong day. Nothing compares
+# these against an outside clock: sessions, sort orders and neighbour ranking
+# all compare a now() against a value that came from now().
+TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
 def now() -> datetime:
-    """Output: a naive-UTC timestamp — what BSON stores and what auth.py's session checks compare against."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    """Output: a naive Vietnam-local timestamp — what BSON stores and what auth.py's session checks compare against."""
+    return datetime.now(TZ).replace(tzinfo=None)
 
 
 def owner_filter(owner_id: ObjectId, **extra: Any) -> dict[str, Any]:
@@ -81,3 +92,14 @@ def spawn(coro: Coroutine[Any, Any, Any]) -> None:
     task = asyncio.create_task(coro)
     _background.add(task)
     task.add_done_callback(_background.discard)
+
+
+if __name__ == "__main__":
+    # Self-check for now(): the only thing here with a wrong-answer failure mode.
+    from datetime import timedelta, timezone
+
+    stamp = now()
+    assert stamp.tzinfo is None, "must stay naive — BSON stores what it is given"
+    offset = stamp - datetime.now(timezone.utc).replace(tzinfo=None)
+    assert timedelta(hours=6, minutes=59) < offset < timedelta(hours=7, minutes=1), offset
+    print(f"ok  now() = {stamp:%Y-%m-%d %H:%M:%S} (UTC+{offset.total_seconds() / 3600:.0f}, naive)")
