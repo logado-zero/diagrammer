@@ -8,6 +8,7 @@ file).
 import os
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class ModelOption:
     # Stable id sent by the client in ChatRequestBody.model and returned by GET /api/models.
@@ -117,3 +118,24 @@ def find_model_option(model_id: str | None) -> ModelOption:
     if fallback is None:
         raise RuntimeError(f"DEFAULT_MODEL_ID {DEFAULT_MODEL_ID} is missing from MODEL_CATALOG")
     return fallback
+
+
+def _demo() -> None:
+    """Self-check, run with `python -m server.models`."""
+    default = find_model_option(DEFAULT_MODEL_ID)
+    assert find_model_option(None) is default, "no model id must fall back to the default"
+    assert find_model_option("not-a-real-model-id") is default, "an unknown id must fall back to the default"
+    assert find_model_option("gpt-5.6-luna") is _BY_ID["gpt-5.6-luna"]
+
+    # Coupled to the TEMPORARY one-model pin in is_model_available() above —
+    # update this assertion (and the loop below) when that pin is removed.
+    assert is_model_available(_BY_ID["gpt-5.6-luna"]) == bool(os.environ.get("OPENAI_API_KEY"))
+    for option in MODEL_CATALOG:
+        if option.id != "gpt-5.6-luna":
+            assert not is_model_available(option), f"{option.id} must be gated off while the pin is in place"
+
+    print("models: all checks passed")
+
+
+if __name__ == "__main__":
+    _demo()

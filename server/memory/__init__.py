@@ -74,14 +74,13 @@ from typing import Any
 
 from bson import ObjectId
 
-from server.shared import now
-
 from server.memory import extract, store
 from server.memory.context import select_context
 from server.memory.encoder import EMBED_DIM, EMBED_MODEL_NAME, EncoderUnavailable, encode
 from server.memory.retrieve import memory_enabled, search
 from server.memory.tool import run_search_memory as search_memory
 from server.memory.types import MemoryUnit, Scope, SearchHit
+from server.shared import now
 
 __all__ = [
     "index_turn",

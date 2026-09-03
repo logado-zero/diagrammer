@@ -33,6 +33,7 @@ from contextlib import asynccontextmanager  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pymongo.errors import PyMongoError  # noqa: E402
 
 from server import auth, memory  # noqa: E402
@@ -111,12 +112,17 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 # allow_credentials is required for the session cookie to be sent on
 # cross-origin requests — and CORS forbids pairing it with allow_origins=["*"],
-# so the wildcard becomes an explicit dev-origin list. In normal use the app is
-# same-origin anyway (Vite proxies /api to this server), so this only matters
-# if you point a differently-served frontend at it.
+# so the wildcard becomes an explicit origin list. In normal use the app is
+# same-origin anyway (Vite proxies /api to this server in dev, and the Docker
+# image serves the built frontend from this same process — see the
+# StaticFiles mount below), so this only matters if you point a
+# differently-served frontend at it. CORS_ORIGINS overrides the dev default
+# with a comma-separated list for that case.
+_default_origins = "http://localhost:5173,http://127.0.0.1:5173"
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", _default_origins).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -127,6 +133,17 @@ app.include_router(meta.router)
 app.include_router(conversations.router)
 app.include_router(attachments.router)
 app.include_router(chat.router)
+
+# The Docker image builds the frontend into dist/ before copying server/ in
+# (see Dockerfile) and runs uvicorn with dist/ as the cwd's sibling, so this
+# mount serves it from the same process — no separate static host needed for
+# a single-container deploy. Never present under `npm run dev` (no dist/ at
+# the server's cwd), so dev keeps using Vite's own dev server/proxy
+# unchanged. html=True serves index.html at "/"; no SPA catch-all route is
+# needed since src/main.tsx has no client-side router — every real route is
+# /api/*, one of auth.py's bare routes, or a static asset path.
+if os.path.isdir("dist"):
+    app.mount("/", StaticFiles(directory="dist", html=True), name="static")
 
 
 @app.exception_handler(PyMongoError)

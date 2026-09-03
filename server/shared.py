@@ -15,7 +15,7 @@ helper for the HTTP routes. The redundancy between them is the design.
 
 import asyncio
 from collections.abc import Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,7 +24,6 @@ from bson.errors import InvalidId
 from fastapi import HTTPException
 
 from server.db import conversations
-
 
 # Every timestamp this backend writes is naive Vietnam local time. Naive
 # because BSON has no timezone, so whatever datetime goes in is what mongosh
@@ -94,12 +93,29 @@ def spawn(coro: Coroutine[Any, Any, Any]) -> None:
     task.add_done_callback(_background.discard)
 
 
-if __name__ == "__main__":
-    # Self-check for now(): the only thing here with a wrong-answer failure mode.
-    from datetime import timedelta, timezone
+def _demo() -> None:
+    """Self-check, run with `python -m server.shared`."""
+    from datetime import timedelta
 
     stamp = now()
     assert stamp.tzinfo is None, "must stay naive — BSON stores what it is given"
-    offset = stamp - datetime.now(timezone.utc).replace(tzinfo=None)
+    offset = stamp - datetime.now(UTC).replace(tzinfo=None)
     assert timedelta(hours=6, minutes=59) < offset < timedelta(hours=7, minutes=1), offset
-    print(f"ok  now() = {stamp:%Y-%m-%d %H:%M:%S} (UTC+{offset.total_seconds() / 3600:.0f}, naive)")
+
+    owner = ObjectId()
+    assert owner_filter(owner) == {"ownerId": owner}
+    assert owner_filter(owner, foo="bar") == {"ownerId": owner, "foo": "bar"}
+
+    oid = ObjectId()
+    assert object_id(str(oid)) == oid
+    try:
+        object_id("not-a-valid-id")
+        raise AssertionError("object_id() must reject a malformed id")
+    except HTTPException as err:
+        assert err.status_code == 404, "a malformed id is a miss, not a 500"
+
+    print(f"shared: all checks passed (now() = {stamp:%Y-%m-%d %H:%M:%S}, UTC+{offset.total_seconds() / 3600:.0f})")
+
+
+if __name__ == "__main__":
+    _demo()

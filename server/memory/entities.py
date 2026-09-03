@@ -57,7 +57,7 @@ MAX_QUOTED_LEN = 40
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # "Revenue by region" — chart titles, product names, anything the user
     # bothered to quote is something they would search for later.
-    ("quoted", re.compile(r"[\"“”']([^\"“”'\n]{2,%d})[\"“”']" % MAX_QUOTED_LEN)),
+    ("quoted", re.compile(r"[\"“”']([^\"“”'\n]{2,%d})[\"“”']" % MAX_QUOTED_LEN)),  # noqa: UP031 - regex quantifier, not a format string
     # 2026-08-14, 14/08/2026, Q3 2026, 2026-Q3.
     ("date", re.compile(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|Q[1-4][ -]?\d{4}|\d{4}[ -]?Q[1-4])\b")),
     # SJC, VN30, USD, GDP — all-caps tokens, which in this app's material are

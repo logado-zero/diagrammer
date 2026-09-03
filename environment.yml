@@ -1,3 +1,6 @@
+# CI and Docker install from requirements.txt/requirements-dev.txt instead of
+# this file (plain pip in a python:3.12-slim image, no conda) — keep that
+# pip list in sync with the one below by hand if you change it.
 name: ui-design
 channels:
   - conda-forge
