@@ -23,6 +23,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+*.tsbuildinfo
 
 # local MongoDB data dir (dev only)
 .mongo-data/
